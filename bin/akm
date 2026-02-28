@@ -487,12 +487,14 @@ cmd_instructions() {
   shift 2>/dev/null || true
 
   case "$subcommand" in
+    edit)             cmd_instructions_edit "$@" ;;
     sync)             cmd_instructions_sync "$@" ;;
     scaffold-project) cmd_instructions_scaffold_project "$@" ;;
     help|--help|-h)
       echo "Usage: akm instructions <subcommand>"
       echo ""
       echo "Subcommands:"
+      echo "  edit              Edit global instructions file in \$EDITOR"
       echo "  sync              Distribute global instructions to tool dirs"
       echo "  scaffold-project  Create AGENTS.md + CLAUDE.md in project root"
       ;;
@@ -510,11 +512,19 @@ cmd_instructions() {
 }
 
 cmd_instructions_sync() {
-  local source_file="${XDG_DATA_HOME:-$HOME/.local/share}/akm/global-instructions.md"
+  local source_file="$HOME/.akm/global-instructions.md"
+
+  # Migrate from old XDG location
+  local old_file="${XDG_DATA_HOME:-$HOME/.local/share}/akm/global-instructions.md"
+  if [[ -f "$old_file" && ! -f "$source_file" ]]; then
+    mkdir -p "$HOME/.akm"
+    mv "$old_file" "$source_file"
+    echo -e "${GREEN}Migrated global instructions to $source_file${NC}"
+  fi
 
   if [[ ! -f "$source_file" ]]; then
     echo -e "${YELLOW}Warning: No global instructions file found at $source_file${NC}" >&2
-    echo -e "${DIM}Run 'akm setup --instructions' to create one, or create it manually.${NC}" >&2
+    echo -e "${DIM}Run 'akm instructions edit' to create one.${NC}" >&2
     return 0
   fi
 
@@ -563,6 +573,37 @@ cmd_instructions_scaffold_project() {
     echo -e "  ${GREEN}Created CLAUDE.md${NC}"
   else
     echo -e "  ${DIM}CLAUDE.md already exists${NC}"
+  fi
+}
+
+cmd_instructions_edit() {
+  local instructions_file="$HOME/.akm/global-instructions.md"
+
+  # Migrate from old XDG location
+  local old_file="${XDG_DATA_HOME:-$HOME/.local/share}/akm/global-instructions.md"
+  if [[ -f "$old_file" && ! -f "$instructions_file" ]]; then
+    mkdir -p "$HOME/.akm"
+    mv "$old_file" "$instructions_file"
+    echo -e "${GREEN}Migrated global instructions to $instructions_file${NC}"
+  fi
+
+  # Create with starter header if it doesn't exist
+  if [[ ! -f "$instructions_file" ]]; then
+    mkdir -p "$(dirname "$instructions_file")"
+    echo "# Global LLM Instructions" > "$instructions_file"
+  fi
+
+  # Resolve editor: $EDITOR > git's editor > nano
+  local editor="${EDITOR:-$(git var GIT_EDITOR 2>/dev/null || echo "nano")}"
+
+  "$editor" "$instructions_file"
+
+  # Prompt to sync after editing
+  local sync_answer
+  read -rp "Sync changes to tool directories? [Y/n]: " sync_answer
+  sync_answer="${sync_answer:-Y}"
+  if [[ "$sync_answer" =~ ^[Yy]$ ]]; then
+    cmd_instructions_sync
   fi
 }
 
@@ -696,12 +737,21 @@ cmd_setup() {
       enabled_features["instructions"]=1
 
       # Create empty global-instructions.md if it doesn't exist
-      local instructions_file="${XDG_DATA_HOME:-$HOME/.local/share}/akm/global-instructions.md"
+      local instructions_file="$HOME/.akm/global-instructions.md"
+
+      # Migrate from old XDG location
+      local old_file="${XDG_DATA_HOME:-$HOME/.local/share}/akm/global-instructions.md"
+      if [[ -f "$old_file" && ! -f "$instructions_file" ]]; then
+        mkdir -p "$HOME/.akm"
+        mv "$old_file" "$instructions_file"
+        echo -e "  ${GREEN}Migrated global instructions to $instructions_file${NC}"
+      fi
+
       if [[ ! -f "$instructions_file" ]]; then
         mkdir -p "$(dirname "$instructions_file")"
         touch "$instructions_file"
         echo -e "  ${GREEN}Instructions enabled${NC}"
-        echo -e "  ${DIM}Created $instructions_file (empty — edit to customize)${NC}"
+        echo -e "  ${DIM}Created $instructions_file (edit with 'akm instructions edit')${NC}"
       else
         echo -e "  ${GREEN}Instructions enabled${NC}"
         echo -e "  ${DIM}Instructions file exists at $instructions_file${NC}"
