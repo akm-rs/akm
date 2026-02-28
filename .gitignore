@@ -7,3 +7,4 @@ Thumbs.db
 
 # Session staging (ephemeral)
 .cache/
+.claude/settings.local.json

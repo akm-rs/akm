@@ -38,6 +38,20 @@ cp "$REPO/shell/akm-init.sh" "$DATA_DIR/shell/akm-init.sh"
 cp "$REPO/tools.json" "$DATA_DIR/tools.json"
 echo "Installed shell init to $DATA_DIR/shell/akm-init.sh"
 
+# --- Save repo path to config ---
+CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/akm/config"
+if [[ -f "$CONFIG_FILE" ]]; then
+  # Update or append AKM_REPO in existing config
+  if grep -q '^AKM_REPO=' "$CONFIG_FILE"; then
+    sed -i "s|^AKM_REPO=.*|AKM_REPO=\"$REPO\"|" "$CONFIG_FILE"
+  else
+    echo "AKM_REPO=\"$REPO\"" >> "$CONFIG_FILE"
+  fi
+else
+  mkdir -p "$(dirname "$CONFIG_FILE")"
+  echo "AKM_REPO=\"$REPO\"" > "$CONFIG_FILE"
+fi
+
 # --- Done ---
 echo ""
 echo "Run 'akm setup' to configure features and wire shell integration."

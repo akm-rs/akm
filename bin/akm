@@ -71,6 +71,7 @@ SKILLS_REMOTE="${SKILLS_REMOTE:-}"
 ARTIFACTS_REMOTE="${ARTIFACTS_REMOTE:-}"
 ARTIFACTS_DIR="${ARTIFACTS_DIR:-$HOME/.akm/artifacts}"
 ARTIFACTS_AUTO_PUSH="${ARTIFACTS_AUTO_PUSH:-true}"
+AKM_REPO="${AKM_REPO:-}"
 EOF
 }
 
@@ -345,6 +346,7 @@ Setup & Config:
     --instructions               Configure instructions only
   config <key> [value]           Get or set a config value
   sync                           Sync all enabled subsystems
+  update                         Pull latest, re-install, optionally sync
   help                           Show this help message
 
 Skills:
@@ -555,7 +557,7 @@ cmd_instructions_sync() {
     local dest="$dir/$filename"
     mkdir -p "$dir"
     cp "$source_file" "$dest"
-    ((count++))
+    ((count++)) || true
   done
 
   echo -e "${GREEN}Global instructions distributed to $count tool directories${NC}"
@@ -940,6 +942,45 @@ _config_print_all() {
   echo -e "  artifacts.remote    = ${ARTIFACTS_REMOTE:-${DIM}(not set)${NC}}"
   echo -e "  artifacts.dir       = ${ARTIFACTS_DIR:-${DIM}(not set)${NC}}"
   echo -e "  artifacts.auto-push = ${ARTIFACTS_AUTO_PUSH:-${DIM}(not set)${NC}}"
+}
+
+cmd_update() {
+  _load_config
+
+  local repo="${AKM_REPO:-}"
+  if [[ -z "$repo" ]]; then
+    echo -e "${RED}Error: AKM_REPO not set in config. Re-run install.sh to fix.${NC}" >&2
+    exit 1
+  fi
+
+  if [[ ! -d "$repo/.git" ]]; then
+    echo -e "${RED}Error: AKM repo not found at $repo${NC}" >&2
+    exit 1
+  fi
+
+  # Pull latest
+  echo -e "${BOLD}Pulling latest from $(git -C "$repo" remote get-url origin 2>/dev/null || echo "$repo")...${NC}"
+  if ! git -C "$repo" pull --ff-only; then
+    echo -e "${RED}Pull failed. Resolve manually in $repo${NC}" >&2
+    exit 1
+  fi
+
+  # Re-run install
+  echo ""
+  bash "$repo/install.sh"
+
+  # Ask about sync
+  echo ""
+  read -rp "Run akm sync now? [Y/n] " answer
+  case "${answer:-Y}" in
+    [Yy]*|"")
+      echo ""
+      cmd_sync_all
+      ;;
+    *)
+      echo -e "${DIM}Skipped. Run 'akm sync' when ready.${NC}"
+      ;;
+  esac
 }
 
 cmd_sync_all() {
@@ -2278,6 +2319,7 @@ main() {
     setup)        shift; cmd_setup "$@" ;;
     config)       shift; cmd_config "$@" ;;
     sync)         shift; cmd_sync_all "$@" ;;
+    update)       shift; cmd_update "$@" ;;
     help|--help|-h) cmd_help ;;
     *)
       echo -e "${RED}Unknown command: $command${NC}" >&2
