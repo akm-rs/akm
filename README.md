@@ -8,7 +8,7 @@ A CLI tool for managing reusable [Agent Skills](https://agentskills.io/), LLM se
 - **Skillverse** — Ships with a default community skills registry; just run `akm setup` and go
 - **Artifact sync** — Auto-sync LLM session outputs (plans, research, notes) to a git repo
 - **Global instructions** — Write once, distribute to all tool directories
-- **Multi-tool support** — Works with Claude Code, GitHub Copilot CLI, OpenCode, and any tool that reads from dotfile directories
+- **Multi-tool support** — Works with Claude Code, GitHub Copilot CLI, OpenCode, Mistral Vibe 
 
 ## Prerequisites
 
@@ -110,7 +110,7 @@ All config lives in `~/.config/akm/config` (flat key=value, sourceable by bash):
 ```bash
 FEATURES="skills,artifacts,instructions"
 SKILLS_REMOTE="https://github.com/akm-rs/skillverse.git"
-ARTIFACTS_REMOTE="git@github.com:user/llm-artifacts.git"
+ARTIFACTS_REMOTE="git@github.com:<user>/<artifacts-repo>.git"
 ARTIFACTS_DIR="$HOME/.akm/artifacts"
 ARTIFACTS_AUTO_PUSH="true"
 ```
