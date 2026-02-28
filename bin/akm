@@ -8,6 +8,7 @@
 set -euo pipefail
 
 # --- Configuration ---
+DEFAULT_SKILLS_REMOTE="https://github.com/akm-rs/skillverse.git"
 LIBRARY_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/akm"
 LIBRARY_JSON="$LIBRARY_DIR/library.json"
 GLOBAL_TOOL_DIRS=("$HOME/.claude" "$HOME/.copilot" "$HOME/.agents" "$HOME/.vibe")
@@ -658,16 +659,27 @@ cmd_setup() {
     if [[ "$skills_answer" =~ ^[Yy]$ ]]; then
       enabled_features["skills"]=1
 
-      local remote_default="${SKILLS_REMOTE:-}"
-      local remote_prompt="  Git remote URL for skills library"
-      if [[ -n "$remote_default" ]]; then
-        remote_prompt="$remote_prompt [$remote_default]"
+      local use_skillverse
+      read -rp "  Use Skillverse (akm's community skills library)? [Y/n]: " use_skillverse
+      use_skillverse="${use_skillverse:-Y}"
+
+      if [[ "$use_skillverse" =~ ^[Yy]$ ]]; then
+        SKILLS_REMOTE="$DEFAULT_SKILLS_REMOTE"
       else
-        remote_prompt="$remote_prompt (leave empty for empty library)"
+        SKILLS_REMOTE=""
       fi
-      local skills_remote_input
-      read -rp "$remote_prompt: " skills_remote_input
-      SKILLS_REMOTE="${skills_remote_input:-$remote_default}"
+
+      local use_custom
+      read -rp "  Use your own skills library URL? [y/N]: " use_custom
+      use_custom="${use_custom:-N}"
+
+      if [[ "$use_custom" =~ ^[Yy]$ ]]; then
+        local custom_url
+        read -rp "  URL: " custom_url
+        if [[ -n "$custom_url" ]]; then
+          SKILLS_REMOTE="$custom_url"
+        fi
+      fi
 
       echo -e "  ${GREEN}Skills enabled${NC}"
     else
@@ -907,7 +919,11 @@ _config_print_all() {
   echo -e "${BOLD}AKM Config${NC} ${DIM}($config_file)${NC}"
   echo ""
   echo -e "  features            = ${FEATURES:-${DIM}(not set)${NC}}"
-  echo -e "  skills.remote       = ${SKILLS_REMOTE:-${DIM}(not set)${NC}}"
+  if [[ -n "${SKILLS_REMOTE:-}" ]]; then
+    echo -e "  skills.remote       = ${SKILLS_REMOTE}"
+  else
+    echo -e "  skills.remote       = ${DIM}${DEFAULT_SKILLS_REMOTE} (default)${NC}"
+  fi
   echo -e "  artifacts.remote    = ${ARTIFACTS_REMOTE:-${DIM}(not set)${NC}}"
   echo -e "  artifacts.dir       = ${ARTIFACTS_DIR:-${DIM}(not set)${NC}}"
   echo -e "  artifacts.auto-push = ${ARTIFACTS_AUTO_PUSH:-${DIM}(not set)${NC}}"
@@ -1402,7 +1418,7 @@ cmd_skills_sync() {
     esac
   done
 
-  local remote="${SKILLS_REMOTE:-}"
+  local remote="${SKILLS_REMOTE:-$DEFAULT_SKILLS_REMOTE}"
   local cache_dir="$HOME/.cache/akm/skills-remote"
 
   # --- Step 1: Sync remote to cache ---
