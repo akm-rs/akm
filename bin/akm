@@ -11,6 +11,7 @@ set -euo pipefail
 DEFAULT_SKILLS_REMOTE="https://github.com/akm-rs/skillverse.git"
 LIBRARY_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/akm"
 LIBRARY_JSON="$LIBRARY_DIR/library.json"
+TOOLS_JSON="$LIBRARY_DIR/tools.json"
 GLOBAL_TOOL_DIRS=("$HOME/.claude" "$HOME/.copilot" "$HOME/.agents" "$HOME/.vibe")
 SPEC_SUBDIRS=(skills agents)
 
@@ -39,6 +40,15 @@ _load_config() {
   if [[ -f "$config_file" ]]; then
     # shellcheck disable=SC1090
     source "$config_file"
+  fi
+}
+
+# Return comma-separated display names of supported tools from tools.json.
+_supported_tools_names() {
+  if [[ -f "$TOOLS_JSON" ]] && command -v jq &>/dev/null; then
+    jq -r '[.[].name] | join(", ")' "$TOOLS_JSON"
+  else
+    echo "Claude Code, Github Copilot CLI, Mistral Vibe, OpenCode"
   fi
 }
 
@@ -319,8 +329,12 @@ _format_type() {
 # --- Subcommands ---
 
 cmd_help() {
-  cat <<'EOF'
+  local tools
+  tools="$(_supported_tools_names)"
+  cat <<EOF
 akm — Agent Kit Manager
+
+Supported tools: $tools
 
 Usage: akm <command> [subcommand] [options]
 
@@ -356,8 +370,6 @@ Instructions:
 
 Config keys:
   artifacts.auto-push            Auto commit+push artifacts on session exit (true|false)
-
-Global tool dirs: ~/.claude, ~/.copilot, ~/.agents, ~/.vibe
 
 Examples:
   akm setup                      # interactive feature configuration
@@ -646,6 +658,7 @@ cmd_setup() {
   unset IFS
 
   echo -e "${BOLD}AKM — Agent Kit Manager${NC}"
+  echo -e "${DIM}Supported tools: $(_supported_tools_names)${NC}"
   echo ""
 
   # --- Skills ---
@@ -1404,6 +1417,7 @@ _skills_libgen_for_dir() {
   echo "$specs_json" | jq '{version: 1, specs: .}' > "$library_file"
 
   [[ "$quiet" == false ]] && echo -e "${GREEN}Library regenerated ($count specs)${NC}"
+  return 0
 }
 
 cmd_skills_sync() {
@@ -1516,6 +1530,7 @@ cmd_skills_sync() {
   done < <(_get_core_ids)
 
   [[ "$quiet" == false ]] && echo -e "${GREEN}$count core symlinks created across ${#GLOBAL_TOOL_DIRS[@]} global tool directories${NC}"
+  return 0
 }
 
 

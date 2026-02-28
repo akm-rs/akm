@@ -31,11 +31,12 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
   echo "Add to your shell profile:  export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
-# --- Install shell init script ---
-SHELL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/akm/shell"
-mkdir -p "$SHELL_DIR"
-cp "$REPO/shell/akm-init.sh" "$SHELL_DIR/akm-init.sh"
-echo "Installed shell init to $SHELL_DIR/akm-init.sh"
+# --- Install shell init script + tools config ---
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/akm"
+mkdir -p "$DATA_DIR/shell"
+cp "$REPO/shell/akm-init.sh" "$DATA_DIR/shell/akm-init.sh"
+cp "$REPO/tools.json" "$DATA_DIR/tools.json"
+echo "Installed shell init to $DATA_DIR/shell/akm-init.sh"
 
 # --- Done ---
 echo ""
