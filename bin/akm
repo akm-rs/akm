@@ -2043,11 +2043,13 @@ cmd_skills_publish() {
         echo "Usage: akm skills publish <id> [--dry-run]"
         echo ""
         echo "Publish a spec from cold storage to your personal skills remote."
+        echo "The remote repo can start empty — publish creates the skills/"
+        echo "directory and library.json automatically on first use."
         echo ""
         echo "Options:"
         echo "  --dry-run    Show what would be pushed without committing"
         echo ""
-        echo "Requires SKILLS_PUBLISH_REMOTE to be configured (run 'akm setup --skills')."
+        echo "Requires SKILLS_PUBLISH_REMOTE to be configured (run 'akm setup')."
         return 0
         ;;
       -*)

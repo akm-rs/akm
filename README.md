@@ -29,7 +29,7 @@ akm setup
 akm skills status
 ```
 
-Setup asks three things: enable skills (Y), use Skillverse (Y), enable artifacts/instructions. The happy path is Enter through everything.
+Setup asks: enable skills (Y), use Skillverse as source (Y), optionally configure a personal publish remote, enable artifacts/instructions. The happy path is Enter through everything.
 
 ## How It Works
 
@@ -91,7 +91,9 @@ Skills:
   skills status                  Full status overview
   skills clean [--project] [--dry-run]    Remove stale specs
   skills clean --project --migrate        Migrate legacy copies to manifest
-  skills publish <id> [--dry-run] [--force]   Publish spec as PR to remote
+  skills promote <path>          Import local skill into cold storage
+  skills edit <id>               Edit spec metadata in $EDITOR
+  skills publish <id> [--dry-run]   Publish spec to personal remote
   skills libgen                  Regenerate library.json from disk
 
 Artifacts:
@@ -110,6 +112,7 @@ All config lives in `~/.config/akm/config` (flat key=value, sourceable by bash):
 ```bash
 FEATURES="skills,artifacts,instructions"
 SKILLS_REMOTE="https://github.com/akm-rs/skillverse.git"
+SKILLS_PUBLISH_REMOTE="git@github.com:<user>/<my-skills>.git"
 ARTIFACTS_REMOTE="git@github.com:<user>/<artifacts-repo>.git"
 ARTIFACTS_DIR="$HOME/.akm/artifacts"
 ARTIFACTS_AUTO_PUSH="true"
@@ -117,11 +120,12 @@ ARTIFACTS_AUTO_PUSH="true"
 
 | Key | Description |
 |-----|-------------|
-| `features` | Enabled domains (comma-separated) |
-| `skills.remote` | Git remote for skills library. Defaults to [Skillverse](https://github.com/akm-rs/skillverse) if unset |
-| `artifacts.remote` | Git remote for artifacts repo |
-| `artifacts.dir` | Local artifacts directory |
-| `artifacts.auto-push` | Auto commit+push artifacts on session exit (`true`/`false`) |
+| `FEATURES` | Enabled domains (comma-separated) |
+| `SKILLS_REMOTE` | Git remote for pulling skills. Defaults to [Skillverse](https://github.com/akm-rs/skillverse) |
+| `SKILLS_PUBLISH_REMOTE` | Git remote for publishing your own skills (optional) |
+| `ARTIFACTS_REMOTE` | Git remote for artifacts repo |
+| `ARTIFACTS_DIR` | Local artifacts directory |
+| `ARTIFACTS_AUTO_PUSH` | Auto commit+push artifacts on session exit (`true`/`false`) |
 
 Use `akm config` to view all, `akm config <key>` to get, `akm config <key> <value>` to set.
 
@@ -170,24 +174,70 @@ These are loaded automatically when you start a session via the shell wrappers. 
   └── shell/akm-init.sh                # Shell integration
 ~/.config/akm/config                    # Configuration (XDG_CONFIG_HOME)
 ~/.cache/akm/                           # Ephemeral data (XDG_CACHE_HOME)
-  ├── skills-remote/                    # Cached clone of skills remote
+  ├── skills-remote/                    # Cached clone of skills source remote
+  ├── publish-remote/                   # Cached clone of publish remote
   └── <project>-<ts>-<pid>/            # Session staging dirs
 ~/.akm/
   ├── global-instructions.md            # Global LLM instructions
   └── artifacts/<repo>/                 # Artifact dirs per project
 ```
 
-## Publishing Skills
+## Creating and Publishing Skills
 
-To publish a project-local skill to your skills remote:
+### Promote: local directory to cold storage
+
+Import a skill you've developed locally into your cold library:
+
+```bash
+akm skills promote ./path/to/my-skill
+```
+
+The directory must contain a `SKILL.md` file (and can include any supporting files). Promote validates frontmatter, prompts for description and tags, copies to cold storage, and regenerates `library.json`.
+
+Use `--force` to skip the overwrite confirmation if the skill already exists.
+
+### Edit: tweak library metadata
+
+Edit a skill's metadata (description, tags, core flag, triggers) in your editor:
+
+```bash
+akm skills edit my-skill
+```
+
+Opens the skill's `library.json` entry in `$EDITOR`. Changes are validated and merged back.
+
+### Publish: cold storage to personal remote
+
+Push a skill from cold storage to your personal skills remote:
 
 ```bash
 akm skills publish my-skill
 ```
 
-This validates frontmatter, copies the spec to a `publish/my-skill` branch in the cached skills remote, commits, pushes, and opens a PR via `gh`.
+The remote repo can start completely empty — publish creates the `skills/` directory and `library.json` automatically on first use. Use `--dry-run` to preview what would be pushed.
 
-Use `--dry-run` to preview and `--force` to overwrite an existing spec.
+Requires `SKILLS_PUBLISH_REMOTE` to be configured (run `akm setup`).
+
+### Full workflow
+
+```bash
+# One-time setup
+akm setup                          # configure source + publish remotes
+
+# Create a skill locally, then:
+akm skills promote ./my-skill      # import to cold storage
+akm skills edit my-skill           # tweak metadata if needed
+akm skills publish my-skill        # push to your personal remote
+```
+
+### Dual remote model
+
+AKM supports two independent remotes:
+
+- **`SKILLS_REMOTE`** — where you pull skills from (defaults to [Skillverse](https://github.com/akm-rs/skillverse), the community library)
+- **`SKILLS_PUBLISH_REMOTE`** — where you push your own skills to (your personal repo)
+
+This lets you consume community skills while maintaining your own collection separately.
 
 ## License
 
