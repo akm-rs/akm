@@ -69,7 +69,8 @@ All runtime decisions read from `~/.config/akm/config` (flat key=value, sourceab
 
 ```bash
 FEATURES="skills,artifacts,instructions"
-SKILLS_REMOTE="git@github.com:user/skills-library.git"
+SKILLS_COMMUNITY_REGISTRY="https://github.com/akm-rs/skillverse.git"
+SKILLS_PERSONAL_REGISTRY="git@github.com:user/my-skills.git"
 ARTIFACTS_REMOTE="git@github.com:user/llm-artifacts.git"
 ARTIFACTS_DIR="$HOME/.akm/artifacts"
 ARTIFACTS_AUTO_PUSH="true"
@@ -92,7 +93,7 @@ Layer 3 — Session (JIT, mid-session)
 
 `~/.local/share/akm/` contains `skills/`, `agents/`, and `library.json`.
 Core specs (`"core": true`) are symlinked into global tool dirs by `akm skills sync`.
-Skills enter the cold library via `akm skills sync` (from SKILLS_REMOTE) or manual drop.
+Skills enter the cold library via `akm skills sync` (from community + personal registries) or manual drop.
 
 ### `akm` CLI Command Structure
 
@@ -101,14 +102,14 @@ Skills enter the cold library via `akm skills sync` (from SKILLS_REMOTE) or manu
 | `setup` | Interactive feature configuration |
 | `sync` | Sync all enabled subsystems |
 | `config <key> [value]` | Get or set config values |
-| `skills sync` | Pull remote → cold library → rebuild symlinks |
+| `skills sync` | Pull registries → cold library → rebuild symlinks |
 | `skills add/remove <id>` | Manage project manifest |
 | `skills load/unload <id>` | JIT session loading |
 | `skills loaded` | Show active session specs |
 | `skills status` | Full status overview |
 | `skills list/search` | Browse library |
 | `skills clean` | Remove stale specs |
-| `skills publish <id>` | Publish local spec as PR |
+| `skills publish <id>` | Publish spec to personal registry |
 | `skills libgen` | Regenerate library.json |
 | `artifacts sync` | Bidirectional sync with artifacts remote |
 | `instructions sync` | Distribute global instructions |
@@ -126,12 +127,13 @@ Defines `claude()`, `copilot()`, `opencode()` wrappers that:
 ### Data Layout
 
 ```
-~/.local/bin/akm                    # CLI binary
-~/.local/share/akm/                 # Cold library + shell init + global instructions
-~/.config/akm/config                # All config
-~/.cache/akm/skills-remote/         # Cached clone of SKILLS_REMOTE
-~/.cache/akm/<session-id>/          # Ephemeral session staging dirs
-~/.akm/artifacts/<repo>/            # Artifact dirs per project
+~/.local/bin/akm                              # CLI binary
+~/.local/share/akm/                           # Cold library + shell init + global instructions
+~/.config/akm/config                          # All config
+~/.cache/akm/skills-community-registry/       # Cached clone of community registry
+~/.cache/akm/skills-personal-registry/        # Cached clone of personal registry
+~/.cache/akm/<session-id>/                    # Ephemeral session staging dirs
+~/.akm/artifacts/<repo>/                      # Artifact dirs per project
 ```
 
 ## Conventions

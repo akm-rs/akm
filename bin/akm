@@ -8,7 +8,7 @@
 set -euo pipefail
 
 # --- Configuration ---
-DEFAULT_SKILLS_REMOTE="https://github.com/akm-rs/skillverse.git"
+DEFAULT_SKILLS_COMMUNITY_REGISTRY="https://github.com/akm-rs/skillverse.git"
 LIBRARY_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/akm"
 LIBRARY_JSON="$LIBRARY_DIR/library.json"
 TOOLS_JSON="$LIBRARY_DIR/tools.json"
@@ -41,6 +41,19 @@ _load_config() {
     # shellcheck disable=SC1090
     source "$config_file"
   fi
+
+  # Migrate old variable names (pre-registry rename)
+  SKILLS_COMMUNITY_REGISTRY="${SKILLS_COMMUNITY_REGISTRY:-${SKILLS_REMOTE:-}}"
+  SKILLS_PERSONAL_REGISTRY="${SKILLS_PERSONAL_REGISTRY:-${SKILLS_PUBLISH_REMOTE:-}}"
+
+  # Migrate old cache directories
+  local cache_base="$HOME/.cache/akm"
+  if [[ -d "$cache_base/skills-remote" && ! -d "$cache_base/skills-community-registry" ]]; then
+    mv "$cache_base/skills-remote" "$cache_base/skills-community-registry"
+  fi
+  if [[ -d "$cache_base/publish-remote" && ! -d "$cache_base/skills-personal-registry" ]]; then
+    mv "$cache_base/publish-remote" "$cache_base/skills-personal-registry"
+  fi
 }
 
 # Return comma-separated display names of supported tools from tools.json.
@@ -67,8 +80,8 @@ _write_config() {
 
   cat > "$config_file" <<EOF
 FEATURES="${FEATURES:-}"
-SKILLS_REMOTE="${SKILLS_REMOTE:-}"
-SKILLS_PUBLISH_REMOTE="${SKILLS_PUBLISH_REMOTE:-}"
+SKILLS_COMMUNITY_REGISTRY="${SKILLS_COMMUNITY_REGISTRY:-}"
+SKILLS_PERSONAL_REGISTRY="${SKILLS_PERSONAL_REGISTRY:-}"
 ARTIFACTS_REMOTE="${ARTIFACTS_REMOTE:-}"
 ARTIFACTS_DIR="${ARTIFACTS_DIR:-$HOME/.akm/artifacts}"
 ARTIFACTS_AUTO_PUSH="${ARTIFACTS_AUTO_PUSH:-true}"
@@ -681,35 +694,35 @@ cmd_setup() {
     if [[ "$skills_answer" =~ ^[Yy]$ ]]; then
       enabled_features["skills"]=1
 
-      # --- Source remote (read-only, for akm skills sync) ---
+      # --- Community registry (read-only, for akm skills sync) ---
       local use_skillverse
-      read -rp "  Use Skillverse (community skills library) as a source? [Y/n]: " use_skillverse
+      read -rp "  Use Skillverse (community skills registry) as a source? [Y/n]: " use_skillverse
       use_skillverse="${use_skillverse:-Y}"
 
       if [[ "$use_skillverse" =~ ^[Yy]$ ]]; then
-        SKILLS_REMOTE="$DEFAULT_SKILLS_REMOTE"
+        SKILLS_COMMUNITY_REGISTRY="$DEFAULT_SKILLS_COMMUNITY_REGISTRY"
       else
         local custom_source
-        read -rp "  Enter custom skills source URL (or leave empty): " custom_source
-        SKILLS_REMOTE="${custom_source:-}"
+        read -rp "  Enter custom skills registry URL (or leave empty): " custom_source
+        SKILLS_COMMUNITY_REGISTRY="${custom_source:-}"
       fi
 
-      # --- Publish remote (read-write, for akm skills publish) ---
-      local use_publish
-      read -rp "  Configure a personal skills remote for publishing? [y/N]: " use_publish
-      use_publish="${use_publish:-N}"
+      # --- Personal registry (read-write, for publish + sync overlay) ---
+      local use_personal
+      read -rp "  Configure a personal skills registry? [y/N]: " use_personal
+      use_personal="${use_personal:-N}"
 
-      if [[ "$use_publish" =~ ^[Yy]$ ]]; then
-        local publish_default="${SKILLS_PUBLISH_REMOTE:-}"
-        local publish_prompt="  Enter your skills remote URL"
-        if [[ -n "$publish_default" ]]; then
-          publish_prompt="$publish_prompt [$publish_default]"
+      if [[ "$use_personal" =~ ^[Yy]$ ]]; then
+        local personal_default="${SKILLS_PERSONAL_REGISTRY:-}"
+        local personal_prompt="  Enter your personal registry URL"
+        if [[ -n "$personal_default" ]]; then
+          personal_prompt="$personal_prompt [$personal_default]"
         fi
-        local publish_url
-        read -rp "$publish_prompt: " publish_url
-        SKILLS_PUBLISH_REMOTE="${publish_url:-$publish_default}"
+        local personal_url
+        read -rp "$personal_prompt: " personal_url
+        SKILLS_PERSONAL_REGISTRY="${personal_url:-$personal_default}"
       else
-        SKILLS_PUBLISH_REMOTE="${SKILLS_PUBLISH_REMOTE:-}"
+        SKILLS_PERSONAL_REGISTRY="${SKILLS_PERSONAL_REGISTRY:-}"
       fi
 
       echo -e "  ${GREEN}Skills enabled${NC}"
@@ -900,14 +913,15 @@ cmd_config() {
 _config_key_to_var() {
   local key="$1"
   case "$key" in
-    artifacts.auto-push) echo "ARTIFACTS_AUTO_PUSH" ;;
-    artifacts.remote)    echo "ARTIFACTS_REMOTE" ;;
-    artifacts.dir)       echo "ARTIFACTS_DIR" ;;
-    skills.remote)       echo "SKILLS_REMOTE" ;;
-    features)            echo "FEATURES" ;;
+    artifacts.auto-push)       echo "ARTIFACTS_AUTO_PUSH" ;;
+    artifacts.remote)          echo "ARTIFACTS_REMOTE" ;;
+    artifacts.dir)             echo "ARTIFACTS_DIR" ;;
+    skills.community-registry) echo "SKILLS_COMMUNITY_REGISTRY" ;;
+    skills.personal-registry)  echo "SKILLS_PERSONAL_REGISTRY" ;;
+    features)                  echo "FEATURES" ;;
     *)
       echo -e "${RED}Unknown config key: $key${NC}" >&2
-      echo -e "${DIM}Available keys: artifacts.auto-push, artifacts.remote, artifacts.dir, skills.remote, features${NC}" >&2
+      echo -e "${DIM}Available keys: skills.community-registry, skills.personal-registry, artifacts.auto-push, artifacts.remote, artifacts.dir, features${NC}" >&2
       return 1
       ;;
   esac
@@ -949,15 +963,16 @@ _config_print_all() {
 
   echo -e "${BOLD}AKM Config${NC} ${DIM}($config_file)${NC}"
   echo ""
-  echo -e "  features            = ${FEATURES:-${DIM}(not set)${NC}}"
-  if [[ -n "${SKILLS_REMOTE:-}" ]]; then
-    echo -e "  skills.remote       = ${SKILLS_REMOTE}"
+  echo -e "  features                  = ${FEATURES:-${DIM}(not set)${NC}}"
+  if [[ -n "${SKILLS_COMMUNITY_REGISTRY:-}" ]]; then
+    echo -e "  skills.community-registry = ${SKILLS_COMMUNITY_REGISTRY}"
   else
-    echo -e "  skills.remote       = ${DIM}${DEFAULT_SKILLS_REMOTE} (default)${NC}"
+    echo -e "  skills.community-registry = ${DIM}${DEFAULT_SKILLS_COMMUNITY_REGISTRY} (default)${NC}"
   fi
-  echo -e "  artifacts.remote    = ${ARTIFACTS_REMOTE:-${DIM}(not set)${NC}}"
-  echo -e "  artifacts.dir       = ${ARTIFACTS_DIR:-${DIM}(not set)${NC}}"
-  echo -e "  artifacts.auto-push = ${ARTIFACTS_AUTO_PUSH:-${DIM}(not set)${NC}}"
+  echo -e "  skills.personal-registry  = ${SKILLS_PERSONAL_REGISTRY:-${DIM}(not set)${NC}}"
+  echo -e "  artifacts.remote          = ${ARTIFACTS_REMOTE:-${DIM}(not set)${NC}}"
+  echo -e "  artifacts.dir             = ${ARTIFACTS_DIR:-${DIM}(not set)${NC}}"
+  echo -e "  artifacts.auto-push       = ${ARTIFACTS_AUTO_PUSH:-${DIM}(not set)${NC}}"
 }
 
 cmd_update() {
@@ -1484,27 +1499,25 @@ cmd_skills_sync() {
     esac
   done
 
-  local remote="${SKILLS_REMOTE:-$DEFAULT_SKILLS_REMOTE}"
-  local cache_dir="$HOME/.cache/akm/skills-remote"
+  local community="${SKILLS_COMMUNITY_REGISTRY:-$DEFAULT_SKILLS_COMMUNITY_REGISTRY}"
+  local community_cache="$HOME/.cache/akm/skills-community-registry"
 
-  # --- Step 1: Sync remote to cache ---
-  if [[ -n "$remote" ]]; then
-    if [[ -d "$cache_dir/.git" ]]; then
-      # Pull latest
+  # --- Step 1: Sync community registry to cache ---
+  if [[ -n "$community" ]]; then
+    if [[ -d "$community_cache/.git" ]]; then
       local pull_output
-      if ! pull_output="$(git -C "$cache_dir" pull --rebase --autostash --quiet 2>&1)"; then
-        echo -e "${YELLOW}Warning: Failed to pull skills remote: $remote. Check your connection or SSH keys.${NC}" >&2
+      if ! pull_output="$(git -C "$community_cache" pull --rebase --autostash --quiet 2>&1)"; then
+        echo -e "${YELLOW}Warning: Failed to pull community registry: $community. Check your connection or SSH keys.${NC}" >&2
         [[ -n "$pull_output" ]] && echo -e "${DIM}$pull_output${NC}" >&2
         echo -e "${DIM}Continuing with cached copy.${NC}" >&2
       else
-        [[ "$quiet" == false ]] && echo -e "${GREEN}Skills remote updated${NC}"
+        [[ "$quiet" == false ]] && echo -e "${GREEN}Community registry updated${NC}"
       fi
     else
-      # First-time clone
-      mkdir -p "$(dirname "$cache_dir")"
+      mkdir -p "$(dirname "$community_cache")"
       local clone_output
-      if ! clone_output="$(git clone --quiet "$remote" "$cache_dir" 2>&1)"; then
-        echo -e "${YELLOW}Warning: Failed to clone skills remote: $remote. Check the URL and your SSH keys.${NC}" >&2
+      if ! clone_output="$(git clone --quiet "$community" "$community_cache" 2>&1)"; then
+        echo -e "${YELLOW}Warning: Failed to clone community registry: $community. Check the URL and your SSH keys.${NC}" >&2
         [[ -n "$clone_output" ]] && echo -e "${DIM}$clone_output${NC}" >&2
         if [[ ! -f "$LIBRARY_JSON" ]]; then
           echo -e "${RED}Error: No cached skills and no existing cold library. Cannot proceed.${NC}" >&2
@@ -1512,47 +1525,90 @@ cmd_skills_sync() {
         fi
         echo -e "${DIM}Continuing with existing cold library.${NC}" >&2
       else
-        [[ "$quiet" == false ]] && echo -e "${GREEN}Skills remote cloned${NC}"
+        [[ "$quiet" == false ]] && echo -e "${GREEN}Community registry cloned${NC}"
       fi
     fi
   else
     if [[ "$quiet" == false ]]; then
       if [[ -f "$LIBRARY_JSON" ]]; then
-        echo -e "${DIM}No skills remote configured. Working with existing cold library.${NC}"
+        echo -e "${DIM}No community registry configured. Working with existing cold library.${NC}"
       else
-        echo -e "${DIM}No skills remote configured and no existing cold library. Skipping skills sync.${NC}"
+        echo -e "${DIM}No community registry configured and no existing cold library. Skipping skills sync.${NC}"
         return 0
       fi
     fi
   fi
 
-  # --- Step 2: Copy from cache to cold library ---
-  if [[ -d "$cache_dir" ]]; then
+  # --- Step 2: Copy community registry to cold library (clean slate) ---
+  if [[ -d "$community_cache" ]]; then
     mkdir -p "$LIBRARY_DIR"
 
-    if [[ -d "$cache_dir/skills" ]]; then
+    if [[ -d "$community_cache/skills" ]]; then
       rm -rf "$LIBRARY_DIR/skills"
-      cp -r "$cache_dir/skills" "$LIBRARY_DIR/"
+      cp -r "$community_cache/skills" "$LIBRARY_DIR/"
     fi
 
-    if [[ -d "$cache_dir/agents" ]]; then
+    if [[ -d "$community_cache/agents" ]]; then
       rm -rf "$LIBRARY_DIR/agents"
-      cp -r "$cache_dir/agents" "$LIBRARY_DIR/"
+      cp -r "$community_cache/agents" "$LIBRARY_DIR/"
     fi
 
-    if [[ -f "$cache_dir/library.json" ]]; then
-      cp "$cache_dir/library.json" "$LIBRARY_DIR/"
+    if [[ -f "$community_cache/library.json" ]]; then
+      cp "$community_cache/library.json" "$LIBRARY_DIR/"
     fi
 
-    [[ "$quiet" == false ]] && echo -e "${GREEN}Cold library updated from cache${NC}"
+    [[ "$quiet" == false ]] && echo -e "${GREEN}Cold library updated from community registry${NC}"
   fi
 
-  # --- Step 3: Run libgen to ensure library.json is current ---
+  # --- Step 3: Overlay personal registry (personal wins on conflict) ---
+  local personal="${SKILLS_PERSONAL_REGISTRY:-}"
+  local personal_cache="$HOME/.cache/akm/skills-personal-registry"
+
+  if [[ -n "$personal" ]]; then
+    if [[ -d "$personal_cache/.git" ]]; then
+      local pull_output
+      if ! pull_output="$(git -C "$personal_cache" pull --rebase --autostash --quiet 2>&1)"; then
+        echo -e "${YELLOW}Warning: Failed to pull personal registry. Check your connection or SSH keys.${NC}" >&2
+        [[ -n "$pull_output" ]] && echo -e "${DIM}$pull_output${NC}" >&2
+        echo -e "${DIM}Continuing with cached copy.${NC}" >&2
+      else
+        [[ "$quiet" == false ]] && echo -e "${GREEN}Personal registry updated${NC}"
+      fi
+    else
+      mkdir -p "$(dirname "$personal_cache")"
+      local clone_output
+      if ! clone_output="$(git clone --quiet "$personal" "$personal_cache" 2>&1)"; then
+        echo -e "${YELLOW}Warning: Failed to clone personal registry: $personal. Check the URL and your SSH keys.${NC}" >&2
+        [[ -n "$clone_output" ]] && echo -e "${DIM}$clone_output${NC}" >&2
+        echo -e "${DIM}Continuing without personal registry.${NC}" >&2
+      else
+        [[ "$quiet" == false ]] && echo -e "${GREEN}Personal registry cloned${NC}"
+      fi
+    fi
+
+    # Overlay: cp -r overwrites matching skills/agents, adds new ones
+    if [[ -d "$personal_cache" ]]; then
+      mkdir -p "$LIBRARY_DIR"
+
+      if [[ -d "$personal_cache/skills" ]]; then
+        cp -r "$personal_cache/skills/"* "$LIBRARY_DIR/skills/" 2>/dev/null || true
+      fi
+
+      if [[ -d "$personal_cache/agents" ]]; then
+        mkdir -p "$LIBRARY_DIR/agents"
+        cp -r "$personal_cache/agents/"* "$LIBRARY_DIR/agents/" 2>/dev/null || true
+      fi
+
+      [[ "$quiet" == false ]] && echo -e "${GREEN}Personal registry overlaid on cold library${NC}"
+    fi
+  fi
+
+  # --- Step 4: Run libgen to ensure library.json is current ---
   if [[ -d "$LIBRARY_DIR/skills" ]] || [[ -d "$LIBRARY_DIR/agents" ]]; then
     _skills_libgen_for_dir "$LIBRARY_DIR" "$quiet"
   fi
 
-  # --- Step 4: Rebuild global symlinks from cold library ---
+  # --- Step 5: Rebuild global symlinks from cold library ---
   if [[ ! -f "$LIBRARY_JSON" ]]; then
     [[ "$quiet" == false ]] && echo -e "${DIM}No library.json found. Skipping symlink rebuild.${NC}"
     return 0
@@ -2037,14 +2093,14 @@ cmd_skills_publish() {
       -h|--help)
         echo "Usage: akm skills publish <id> [--dry-run]"
         echo ""
-        echo "Publish a spec from cold storage to your personal skills remote."
-        echo "The remote repo can start empty — publish creates the skills/"
+        echo "Publish a spec from cold storage to your personal skills registry."
+        echo "The registry repo can start empty — publish creates the skills/"
         echo "directory and library.json automatically on first use."
         echo ""
         echo "Options:"
         echo "  --dry-run    Show what would be pushed without committing"
         echo ""
-        echo "Requires SKILLS_PUBLISH_REMOTE to be configured (run 'akm setup')."
+        echo "Requires SKILLS_PERSONAL_REGISTRY to be configured (run 'akm setup')."
         return 0
         ;;
       -*)
@@ -2068,11 +2124,11 @@ cmd_skills_publish() {
     exit 1
   fi
 
-  # --- Verify SKILLS_PUBLISH_REMOTE is configured ---
-  local publish_remote="${SKILLS_PUBLISH_REMOTE:-}"
+  # --- Verify personal registry is configured ---
+  local publish_remote="${SKILLS_PERSONAL_REGISTRY:-}"
   if [[ -z "$publish_remote" ]]; then
-    echo -e "${RED}Error: No publish remote configured.${NC}" >&2
-    echo -e "${DIM}Run 'akm setup --skills' to add a personal skills remote for publishing.${NC}" >&2
+    echo -e "${RED}Error: No personal registry configured.${NC}" >&2
+    echo -e "${DIM}Run 'akm setup --skills' to add a personal skills registry.${NC}" >&2
     exit 1
   fi
 
@@ -2105,30 +2161,28 @@ cmd_skills_publish() {
   echo -e "  ${DIM}remote:${NC}      $publish_remote"
   echo ""
 
-  # --- Clone or pull publish remote cache ---
-  local cache_dir="$HOME/.cache/akm/publish-remote"
+  # --- Clone or pull personal registry cache ---
+  local cache_dir="$HOME/.cache/akm/skills-personal-registry"
 
   if [[ -d "$cache_dir/.git" ]]; then
-    # Pull latest
     local pull_output
     if ! pull_output="$(git -C "$cache_dir" pull --rebase --autostash --quiet 2>&1)"; then
-      echo -e "${YELLOW}Warning: Failed to pull publish remote. Check your connection or SSH keys.${NC}" >&2
+      echo -e "${YELLOW}Warning: Failed to pull personal registry. Check your connection or SSH keys.${NC}" >&2
       [[ -n "$pull_output" ]] && echo -e "${DIM}$pull_output${NC}" >&2
       echo -e "${DIM}Continuing with cached copy.${NC}" >&2
     else
-      echo -e "  ${GREEN}Publish remote updated${NC}"
+      echo -e "  ${GREEN}Personal registry updated${NC}"
     fi
   else
-    # First-time clone
     mkdir -p "$(dirname "$cache_dir")"
     local clone_output
     if ! clone_output="$(git clone --quiet "$publish_remote" "$cache_dir" 2>&1)"; then
-      echo -e "${RED}Error: Failed to clone publish remote: $publish_remote${NC}" >&2
+      echo -e "${RED}Error: Failed to clone personal registry: $publish_remote${NC}" >&2
       [[ -n "$clone_output" ]] && echo -e "${DIM}$clone_output${NC}" >&2
       echo -e "${DIM}Check the URL and your SSH keys/permissions.${NC}" >&2
       exit 1
     fi
-    echo -e "  ${GREEN}Publish remote cloned${NC}"
+    echo -e "  ${GREEN}Personal registry cloned${NC}"
   fi
 
   # --- Copy spec from cold storage into clone ---
@@ -2143,7 +2197,7 @@ cmd_skills_publish() {
     mkdir -p "$(dirname "$dest_path")"
     cp "$source_path" "$dest_path"
   fi
-  echo -e "  ${GREEN}Copied $spec_type to publish remote${NC}"
+  echo -e "  ${GREEN}Copied $spec_type to personal registry${NC}"
 
   # --- Regenerate library.json in the clone ---
   _skills_libgen_for_dir "$cache_dir" true
@@ -2166,7 +2220,7 @@ cmd_skills_publish() {
 
   # Check if there are staged changes before committing
   if git -C "$cache_dir" diff --cached --quiet; then
-    echo -e "${DIM}No changes to publish — spec '$id' is already up to date in the remote.${NC}"
+    echo -e "${DIM}No changes to publish — spec '$id' is already up to date in the registry.${NC}"
     return 0
   fi
 
@@ -2178,15 +2232,15 @@ cmd_skills_publish() {
   # --- Push to main ---
   local push_output
   if ! push_output="$(git -C "$cache_dir" push --quiet 2>&1)"; then
-    echo -e "${RED}Error: Failed to push to publish remote.${NC}" >&2
+    echo -e "${RED}Error: Failed to push to personal registry.${NC}" >&2
     [[ -n "$push_output" ]] && echo -e "${DIM}$push_output${NC}" >&2
-    echo -e "${DIM}Check your remote URL and push permissions.${NC}" >&2
+    echo -e "${DIM}Check your registry URL and push permissions.${NC}" >&2
     exit 1
   fi
 
   echo -e "  ${GREEN}Pushed to $publish_remote${NC}"
   echo ""
-  echo -e "${GREEN}Published $spec_type '$id' to personal remote${NC}"
+  echo -e "${GREEN}Published $spec_type '$id' to personal registry${NC}"
 }
 
 cmd_skills_libgen() {
