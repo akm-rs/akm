@@ -985,13 +985,13 @@ cmd_update() {
   echo ""
   bash "$repo/install.sh"
 
-  # Ask about sync
+  # Ask about sync — exec the NEW binary so we don't run from a replaced file
   echo ""
   read -rp "Run akm sync now? [Y/n] " answer
   case "${answer:-Y}" in
     [Yy]*|"")
       echo ""
-      cmd_sync_all
+      exec akm sync
       ;;
     *)
       echo -e "${DIM}Skipped. Run 'akm sync' when ready.${NC}"
