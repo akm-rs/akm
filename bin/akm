@@ -361,7 +361,8 @@ Skills:
   skills search <query>          Search library by keyword
   skills status                  Show core, session, manifest, and cold specs
   skills clean [--project]       Remove stale specs
-  skills publish <id>            Publish local spec to source repo as PR
+  skills promote <path>          Import local skill into cold storage
+  skills publish <id>            Publish spec from cold storage to personal remote
   skills libgen                  Regenerate library.json from disk
 
 Artifacts:
@@ -400,6 +401,7 @@ cmd_skills() {
     search)     cmd_skills_search "$@" ;;
     status)     cmd_skills_status "$@" ;;
     clean)      cmd_skills_clean "$@" ;;
+    promote)    cmd_skills_promote "$@" ;;
     publish)    cmd_skills_publish "$@" ;;
     libgen)     cmd_skills_libgen "$@" ;;
     help|--help|-h)
@@ -416,7 +418,8 @@ cmd_skills() {
       echo "  search <query>    Search by keyword"
       echo "  status            Full status view (default)"
       echo "  clean             Remove stale specs (--project)"
-      echo "  publish <id>      Publish local spec as PR"
+      echo "  promote <path>    Import local skill into cold storage"
+      echo "  publish <id>      Publish spec to personal remote"
       echo "  libgen            Regenerate library.json"
       ;;
     *)
@@ -2315,6 +2318,178 @@ cmd_skills_libgen() {
   local count
   count="$(jq '.specs | length' "$library_file")"
   echo -e "  Specs on disk: $count"
+}
+
+cmd_skills_promote() {
+  _check_deps
+
+  # --- Parse arguments ---
+  local spec_path="" force=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force)  force=true; shift ;;
+      -h|--help)
+        echo "Usage: akm skills promote <path> [--force]"
+        echo ""
+        echo "Import a local skill into cold storage."
+        echo ""
+        echo "Arguments:"
+        echo "  <path>     Directory containing a SKILL.md file"
+        echo ""
+        echo "Options:"
+        echo "  --force    Skip overwrite confirmation"
+        return 0
+        ;;
+      -*)
+        echo -e "${RED}Unknown option: $1${NC}" >&2
+        echo "Usage: akm skills promote <path> [--force]" >&2
+        exit 1
+        ;;
+      *)
+        if [[ -z "$spec_path" ]]; then
+          spec_path="$1"; shift
+        else
+          echo -e "${RED}Error: Only one path allowed.${NC}" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
+
+  if [[ -z "$spec_path" ]]; then
+    echo -e "${RED}Usage: akm skills promote <path> [--force]${NC}" >&2
+    exit 1
+  fi
+
+  # --- Resolve to absolute path ---
+  if [[ ! -d "$spec_path" ]]; then
+    echo -e "${RED}Error: Directory not found: $spec_path${NC}" >&2
+    exit 1
+  fi
+  spec_path="$(cd "$spec_path" && pwd)"
+
+  # --- Validate: must contain SKILL.md ---
+  if [[ ! -f "$spec_path/SKILL.md" ]]; then
+    echo -e "${RED}Error: No SKILL.md found in $spec_path${NC}" >&2
+    echo -e "${DIM}The directory must contain a SKILL.md file (with optional supporting files).${NC}" >&2
+    exit 1
+  fi
+
+  local id md_file
+  id="$(basename "$spec_path")"
+  md_file="$spec_path/SKILL.md"
+
+  # --- Extract and validate frontmatter ---
+  local name desc
+  name="$(_extract_fm_field "$md_file" "name")"
+  desc="$(_extract_fm_field "$md_file" "description")"
+
+  if [[ -z "$name" ]]; then
+    echo -e "${RED}Error: Missing required frontmatter field: name${NC}" >&2
+    echo -e "${DIM}Add 'name: ...' to the YAML frontmatter in $md_file${NC}" >&2
+    exit 1
+  fi
+
+  if [[ -z "$desc" ]]; then
+    echo -e "${RED}Error: Missing required frontmatter field: description${NC}" >&2
+    echo -e "${DIM}Add 'description: ...' to the YAML frontmatter in $md_file${NC}" >&2
+    exit 1
+  fi
+
+  # Strip surrounding quotes if present (YAML allows "..." or '...')
+  name="${name#\"}" ; name="${name%\"}" ; name="${name#\'}" ; name="${name%\'}"
+  desc="${desc#\"}" ; desc="${desc%\"}" ; desc="${desc#\'}" ; desc="${desc%\'}"
+
+  # --- Interactive metadata prompts ---
+  local user_desc="$desc"
+  local user_tags=""
+
+  if [[ -t 0 ]]; then
+    echo -e "${BOLD}Promoting skill:${NC}"
+    echo -e "  ${DIM}id:${NC}   $id"
+    echo -e "  ${DIM}name:${NC} $name"
+    echo ""
+
+    local desc_input
+    read -rp "  Description [$desc]: " desc_input
+    if [[ -n "$desc_input" ]]; then
+      user_desc="$desc_input"
+    fi
+
+    local tags_input
+    read -rp "  Tags (comma-separated) []: " tags_input
+    if [[ -n "$tags_input" ]]; then
+      user_tags="$tags_input"
+    fi
+    echo ""
+  fi
+
+  # --- Check if already exists in cold storage ---
+  local dest_path="$LIBRARY_DIR/skills/$id"
+
+  if [[ -e "$dest_path" ]]; then
+    if [[ "$force" == false ]]; then
+      if [[ -t 0 ]]; then
+        local overwrite_answer
+        read -rp "Overwrite existing skill '$id'? [y/N]: " overwrite_answer
+        if [[ ! "$overwrite_answer" =~ ^[Yy]$ ]]; then
+          echo -e "${DIM}Aborted.${NC}"
+          return 0
+        fi
+      else
+        echo -e "${RED}Error: Skill '$id' already exists in cold storage. Use --force to overwrite.${NC}" >&2
+        exit 1
+      fi
+    fi
+  fi
+
+  # --- Copy to cold storage ---
+  rm -rf "$dest_path"
+  cp -r "$spec_path" "$dest_path"
+  echo -e "  ${GREEN}Copied skill to cold storage${NC}"
+
+  # --- Regenerate library.json ---
+  _skills_libgen_for_dir "$LIBRARY_DIR" true
+
+  # --- Patch entry with user-provided metadata via jq ---
+  local tags_json="[]"
+  if [[ -n "$user_tags" ]]; then
+    tags_json="$(echo "$user_tags" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -s .)"
+  fi
+
+  jq --arg id "$id" --arg desc "$user_desc" --argjson tags "$tags_json" \
+    '(.specs[] | select(.id == $id)) |= (.description = $desc | .tags = $tags)' \
+    "$LIBRARY_JSON" > "$LIBRARY_JSON.tmp"
+  mv "$LIBRARY_JSON.tmp" "$LIBRARY_JSON"
+
+  # --- Rebuild global symlinks (same logic as end of skills sync) ---
+  # Clear existing symlinks in global tool dirs
+  for tool_dir in "${GLOBAL_TOOL_DIRS[@]}"; do
+    for sd in "${SPEC_SUBDIRS[@]}"; do
+      local dir="$tool_dir/$sd"
+      [[ -d "$dir" ]] || continue
+      find "$dir" -maxdepth 1 -type l -delete 2>/dev/null || true
+    done
+  done
+
+  # Clean broken symlinks
+  for tool_dir in "${GLOBAL_TOOL_DIRS[@]}"; do
+    for sd in "${SPEC_SUBDIRS[@]}"; do
+      local dir="$tool_dir/$sd"
+      [[ -d "$dir" ]] || continue
+      find -L "$dir" -maxdepth 1 -type l -delete 2>/dev/null || true
+    done
+  done
+
+  # Recreate core symlinks
+  local count=0
+  while IFS= read -r core_id; do
+    _create_symlink "$core_id" && ((count++)) || true
+  done < <(_get_core_ids)
+
+  echo -e "  ${GREEN}$count core symlinks rebuilt${NC}"
+  echo ""
+  echo -e "${GREEN}Promoted skill '$id' to cold storage${NC}"
 }
 
 # --- Main ---
