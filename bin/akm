@@ -68,6 +68,7 @@ _write_config() {
   cat > "$config_file" <<EOF
 FEATURES="${FEATURES:-}"
 SKILLS_REMOTE="${SKILLS_REMOTE:-}"
+SKILLS_PUBLISH_REMOTE="${SKILLS_PUBLISH_REMOTE:-}"
 ARTIFACTS_REMOTE="${ARTIFACTS_REMOTE:-}"
 ARTIFACTS_DIR="${ARTIFACTS_DIR:-$HOME/.akm/artifacts}"
 ARTIFACTS_AUTO_PUSH="${ARTIFACTS_AUTO_PUSH:-true}"
@@ -674,26 +675,35 @@ cmd_setup() {
     if [[ "$skills_answer" =~ ^[Yy]$ ]]; then
       enabled_features["skills"]=1
 
+      # --- Source remote (read-only, for akm skills sync) ---
       local use_skillverse
-      read -rp "  Use Skillverse (akm's community skills library)? [Y/n]: " use_skillverse
+      read -rp "  Use Skillverse (community skills library) as a source? [Y/n]: " use_skillverse
       use_skillverse="${use_skillverse:-Y}"
 
       if [[ "$use_skillverse" =~ ^[Yy]$ ]]; then
         SKILLS_REMOTE="$DEFAULT_SKILLS_REMOTE"
       else
-        SKILLS_REMOTE=""
+        local custom_source
+        read -rp "  Enter custom skills source URL (or leave empty): " custom_source
+        SKILLS_REMOTE="${custom_source:-}"
       fi
 
-      local use_custom
-      read -rp "  Use your own skills library URL? [y/N]: " use_custom
-      use_custom="${use_custom:-N}"
+      # --- Publish remote (read-write, for akm skills publish) ---
+      local use_publish
+      read -rp "  Configure a personal skills remote for publishing? [y/N]: " use_publish
+      use_publish="${use_publish:-N}"
 
-      if [[ "$use_custom" =~ ^[Yy]$ ]]; then
-        local custom_url
-        read -rp "  URL: " custom_url
-        if [[ -n "$custom_url" ]]; then
-          SKILLS_REMOTE="$custom_url"
+      if [[ "$use_publish" =~ ^[Yy]$ ]]; then
+        local publish_default="${SKILLS_PUBLISH_REMOTE:-}"
+        local publish_prompt="  Enter your skills remote URL"
+        if [[ -n "$publish_default" ]]; then
+          publish_prompt="$publish_prompt [$publish_default]"
         fi
+        local publish_url
+        read -rp "$publish_prompt: " publish_url
+        SKILLS_PUBLISH_REMOTE="${publish_url:-$publish_default}"
+      else
+        SKILLS_PUBLISH_REMOTE="${SKILLS_PUBLISH_REMOTE:-}"
       fi
 
       echo -e "  ${GREEN}Skills enabled${NC}"
