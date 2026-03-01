@@ -2304,6 +2304,7 @@ cmd_skills_promote() {
   # --- Interactive metadata prompts ---
   local user_desc="$desc"
   local user_tags=""
+  local user_core=false
 
   if [[ -t 0 ]]; then
     echo -e "${BOLD}Promoting skill:${NC}"
@@ -2321,6 +2322,12 @@ cmd_skills_promote() {
     read -rp "  Tags (comma-separated) []: " tags_input
     if [[ -n "$tags_input" ]]; then
       user_tags="$tags_input"
+    fi
+
+    local core_input
+    read -rp "  Core skill (always available globally)? [y/N]: " core_input
+    if [[ "$core_input" =~ ^[Yy]$ ]]; then
+      user_core=true
     fi
     echo ""
   fi
@@ -2358,8 +2365,8 @@ cmd_skills_promote() {
     tags_json="$(echo "$user_tags" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -s .)"
   fi
 
-  jq --arg id "$id" --arg desc "$user_desc" --argjson tags "$tags_json" \
-    '(.specs[] | select(.id == $id)) |= (.description = $desc | .tags = $tags)' \
+  jq --arg id "$id" --arg desc "$user_desc" --argjson tags "$tags_json" --argjson core "$user_core" \
+    '(.specs[] | select(.id == $id)) |= (.description = $desc | .tags = $tags | .core = $core)' \
     "$LIBRARY_JSON" > "$LIBRARY_JSON.tmp"
   mv "$LIBRARY_JSON.tmp" "$LIBRARY_JSON"
 
