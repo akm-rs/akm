@@ -68,6 +68,7 @@ _write_config() {
   cat > "$config_file" <<EOF
 FEATURES="${FEATURES:-}"
 SKILLS_REMOTE="${SKILLS_REMOTE:-}"
+SKILLS_PUBLISH_REMOTE="${SKILLS_PUBLISH_REMOTE:-}"
 ARTIFACTS_REMOTE="${ARTIFACTS_REMOTE:-}"
 ARTIFACTS_DIR="${ARTIFACTS_DIR:-$HOME/.akm/artifacts}"
 ARTIFACTS_AUTO_PUSH="${ARTIFACTS_AUTO_PUSH:-true}"
@@ -360,7 +361,9 @@ Skills:
   skills search <query>          Search library by keyword
   skills status                  Show core, session, manifest, and cold specs
   skills clean [--project]       Remove stale specs
-  skills publish <id>            Publish local spec to source repo as PR
+  skills promote <path>          Import local skill into cold storage
+  skills edit <id>               Edit spec metadata in \$EDITOR
+  skills publish <id>            Publish spec from cold storage to personal remote
   skills libgen                  Regenerate library.json from disk
 
 Artifacts:
@@ -399,6 +402,8 @@ cmd_skills() {
     search)     cmd_skills_search "$@" ;;
     status)     cmd_skills_status "$@" ;;
     clean)      cmd_skills_clean "$@" ;;
+    promote)    cmd_skills_promote "$@" ;;
+    edit)       cmd_skills_edit "$@" ;;
     publish)    cmd_skills_publish "$@" ;;
     libgen)     cmd_skills_libgen "$@" ;;
     help|--help|-h)
@@ -415,7 +420,9 @@ cmd_skills() {
       echo "  search <query>    Search by keyword"
       echo "  status            Full status view (default)"
       echo "  clean             Remove stale specs (--project)"
-      echo "  publish <id>      Publish local spec as PR"
+      echo "  promote <path>    Import local skill into cold storage"
+      echo "  edit <id>         Edit spec metadata in \$EDITOR"
+      echo "  publish <id>      Publish spec to personal remote"
       echo "  libgen            Regenerate library.json"
       ;;
     *)
@@ -674,26 +681,35 @@ cmd_setup() {
     if [[ "$skills_answer" =~ ^[Yy]$ ]]; then
       enabled_features["skills"]=1
 
+      # --- Source remote (read-only, for akm skills sync) ---
       local use_skillverse
-      read -rp "  Use Skillverse (akm's community skills library)? [Y/n]: " use_skillverse
+      read -rp "  Use Skillverse (community skills library) as a source? [Y/n]: " use_skillverse
       use_skillverse="${use_skillverse:-Y}"
 
       if [[ "$use_skillverse" =~ ^[Yy]$ ]]; then
         SKILLS_REMOTE="$DEFAULT_SKILLS_REMOTE"
       else
-        SKILLS_REMOTE=""
+        local custom_source
+        read -rp "  Enter custom skills source URL (or leave empty): " custom_source
+        SKILLS_REMOTE="${custom_source:-}"
       fi
 
-      local use_custom
-      read -rp "  Use your own skills library URL? [y/N]: " use_custom
-      use_custom="${use_custom:-N}"
+      # --- Publish remote (read-write, for akm skills publish) ---
+      local use_publish
+      read -rp "  Configure a personal skills remote for publishing? [y/N]: " use_publish
+      use_publish="${use_publish:-N}"
 
-      if [[ "$use_custom" =~ ^[Yy]$ ]]; then
-        local custom_url
-        read -rp "  URL: " custom_url
-        if [[ -n "$custom_url" ]]; then
-          SKILLS_REMOTE="$custom_url"
+      if [[ "$use_publish" =~ ^[Yy]$ ]]; then
+        local publish_default="${SKILLS_PUBLISH_REMOTE:-}"
+        local publish_prompt="  Enter your skills remote URL"
+        if [[ -n "$publish_default" ]]; then
+          publish_prompt="$publish_prompt [$publish_default]"
         fi
+        local publish_url
+        read -rp "$publish_prompt: " publish_url
+        SKILLS_PUBLISH_REMOTE="${publish_url:-$publish_default}"
+      else
+        SKILLS_PUBLISH_REMOTE="${SKILLS_PUBLISH_REMOTE:-}"
       fi
 
       echo -e "  ${GREEN}Skills enabled${NC}"
@@ -2016,268 +2032,166 @@ cmd_skills_migrate() {
 
 cmd_skills_publish() {
   _check_deps
+  _load_config
 
   # --- Parse arguments ---
-  local id="" dry_run=false force=false
+  local id="" dry_run=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dry-run) dry_run=true; shift ;;
-      --force)   force=true; shift ;;
-      -*)        echo -e "${RED}Unknown option: $1${NC}" >&2; exit 1 ;;
+      -h|--help)
+        echo "Usage: akm skills publish <id> [--dry-run]"
+        echo ""
+        echo "Publish a spec from cold storage to your personal skills remote."
+        echo "The remote repo can start empty — publish creates the skills/"
+        echo "directory and library.json automatically on first use."
+        echo ""
+        echo "Options:"
+        echo "  --dry-run    Show what would be pushed without committing"
+        echo ""
+        echo "Requires SKILLS_PUBLISH_REMOTE to be configured (run 'akm setup')."
+        return 0
+        ;;
+      -*)
+        echo -e "${RED}Unknown option: $1${NC}" >&2
+        echo "Usage: akm skills publish <id> [--dry-run]" >&2
+        exit 1
+        ;;
       *)
         if [[ -z "$id" ]]; then
           id="$1"; shift
         else
-          echo -e "${RED}Error: Only one spec ID allowed.${NC}" >&2; exit 1
+          echo -e "${RED}Error: Only one spec ID allowed.${NC}" >&2
+          exit 1
         fi
         ;;
     esac
   done
 
   if [[ -z "$id" ]]; then
-    echo -e "${RED}Usage: akm skills publish <id> [--dry-run] [--force]${NC}" >&2
+    echo -e "${RED}Usage: akm skills publish <id> [--dry-run]${NC}" >&2
     exit 1
   fi
 
-  # --- Resolve source repo (cached clone) ---
-  local cache_dir="$HOME/.cache/akm/skills-remote"
-  if [[ ! -d "$cache_dir/.git" ]]; then
-    echo -e "${RED}Error: No skills remote cache found. Run 'akm skills sync' first.${NC}" >&2
-    exit 1
-  fi
-  local source_repo="$cache_dir"
-
-  local library_file="$source_repo/library.json"
-
-  # --- Locate spec in project ---
-  local project_root
-  project_root="$(_project_root)"
-  if [[ -z "$project_root" ]]; then
-    echo -e "${RED}Error: Not in a git repository.${NC}" >&2
+  # --- Verify SKILLS_PUBLISH_REMOTE is configured ---
+  local publish_remote="${SKILLS_PUBLISH_REMOTE:-}"
+  if [[ -z "$publish_remote" ]]; then
+    echo -e "${RED}Error: No publish remote configured.${NC}" >&2
+    echo -e "${DIM}Run 'akm setup --skills' to add a personal skills remote for publishing.${NC}" >&2
     exit 1
   fi
 
-  local spec_type="" spec_file=""
+  # --- Verify spec exists in cold storage ---
+  _check_library
 
-  # Check for skill first
-  if [[ -d "$project_root/.claude/skills/$id" && -f "$project_root/.claude/skills/$id/SKILL.md" ]]; then
-    spec_type="skill"
-    spec_file="$project_root/.claude/skills/$id/SKILL.md"
-  # Then check for agent
-  elif [[ -f "$project_root/.claude/agents/${id}.md" ]]; then
-    spec_type="agent"
-    spec_file="$project_root/.claude/agents/${id}.md"
-  else
-    echo -e "${RED}Error: Spec '$id' not found in project.${NC}" >&2
-    echo -e "${DIM}Expected: .claude/skills/$id/SKILL.md (skill) or .claude/agents/$id.md (agent)${NC}" >&2
+  if ! _spec_exists "$id"; then
+    echo -e "${RED}Error: Spec '$id' not found in cold storage.${NC}" >&2
+    echo -e "${DIM}Run 'akm skills promote <path>' to import it first.${NC}" >&2
     exit 1
   fi
 
-  # --- Validate frontmatter ---
+  local spec_type
+  spec_type="$(_spec_type "$id")"
+  local subdir
+  subdir="$(_type_subdir "$spec_type")"
+  local source_path
+  source_path="$(_spec_source_path "$id")"
+
+  # --- Display what will be published ---
   local name desc
-  name="$(_extract_fm_field "$spec_file" "name")"
-  desc="$(_extract_fm_field "$spec_file" "description")"
+  name="$(jq -r --arg id "$id" '.specs[] | select(.id == $id) | .name' "$LIBRARY_JSON")"
+  desc="$(jq -r --arg id "$id" '.specs[] | select(.id == $id) | .description' "$LIBRARY_JSON")"
 
-  if [[ -z "$name" ]]; then
-    echo -e "${RED}Error: Missing 'name' in frontmatter of $spec_file${NC}" >&2
-    exit 1
-  fi
-
-  if [[ -z "$desc" ]]; then
-    echo -e "${RED}Error: Missing 'description' in frontmatter of $spec_file${NC}" >&2
-    exit 1
-  fi
-
-  # Strip surrounding quotes if present (YAML allows "..." or '...')
-  name="${name#\"}" ; name="${name%\"}" ; name="${name#\'}" ; name="${name%\'}"
-  desc="${desc#\"}" ; desc="${desc%\"}" ; desc="${desc#\'}" ; desc="${desc%\'}"
-
-  if [[ "$desc" != "Use when"* ]]; then
-    echo -e "${YELLOW}Warning: description should start with 'Use when...' per conventions${NC}" >&2
-  fi
-
-  # --- Display auto-detected metadata ---
   echo -e "${BOLD}Publishing spec:${NC}"
   echo -e "  ${DIM}id:${NC}          $id"
   echo -e "  ${DIM}type:${NC}        $spec_type"
   echo -e "  ${DIM}name:${NC}        $name"
   echo -e "  ${DIM}description:${NC} $desc"
-  echo -e "  ${DIM}source repo:${NC} $source_repo"
+  echo -e "  ${DIM}remote:${NC}      $publish_remote"
   echo ""
 
-  # --- Check conflict ---
-  local subdir
-  subdir="$(_type_subdir "$spec_type")"
+  # --- Clone or pull publish remote cache ---
+  local cache_dir="$HOME/.cache/akm/publish-remote"
+
+  if [[ -d "$cache_dir/.git" ]]; then
+    # Pull latest
+    local pull_output
+    if ! pull_output="$(git -C "$cache_dir" pull --rebase --autostash --quiet 2>&1)"; then
+      echo -e "${YELLOW}Warning: Failed to pull publish remote. Check your connection or SSH keys.${NC}" >&2
+      [[ -n "$pull_output" ]] && echo -e "${DIM}$pull_output${NC}" >&2
+      echo -e "${DIM}Continuing with cached copy.${NC}" >&2
+    else
+      echo -e "  ${GREEN}Publish remote updated${NC}"
+    fi
+  else
+    # First-time clone
+    mkdir -p "$(dirname "$cache_dir")"
+    local clone_output
+    if ! clone_output="$(git clone --quiet "$publish_remote" "$cache_dir" 2>&1)"; then
+      echo -e "${RED}Error: Failed to clone publish remote: $publish_remote${NC}" >&2
+      [[ -n "$clone_output" ]] && echo -e "${DIM}$clone_output${NC}" >&2
+      echo -e "${DIM}Check the URL and your SSH keys/permissions.${NC}" >&2
+      exit 1
+    fi
+    echo -e "  ${GREEN}Publish remote cloned${NC}"
+  fi
+
+  # --- Copy spec from cold storage into clone ---
   local dest_path
   if [[ "$spec_type" == "skill" ]]; then
-    dest_path="$source_repo/$subdir/$id"
+    dest_path="$cache_dir/$subdir/$id"
+    mkdir -p "$dest_path"
+    rm -rf "$dest_path"
+    cp -r "$source_path" "$dest_path"
   else
-    dest_path="$source_repo/$subdir/${id}.md"
+    dest_path="$cache_dir/$subdir/${id}.md"
+    mkdir -p "$(dirname "$dest_path")"
+    cp "$source_path" "$dest_path"
   fi
+  echo -e "  ${GREEN}Copied $spec_type to publish remote${NC}"
 
-  if [[ -e "$dest_path" && "$force" == false ]]; then
-    echo -e "${RED}Error: Spec '$id' already exists in source repo at $dest_path${NC}" >&2
-    echo -e "${DIM}Use --force to overwrite.${NC}" >&2
-    exit 1
-  fi
+  # --- Regenerate library.json in the clone ---
+  _skills_libgen_for_dir "$cache_dir" true
 
-  # --- Interactive metadata prompts (only if spec not already in library.json) ---
-  local core="false"
-  local tags="[]"
-  local triggers="{}"
-
-  local in_library=false
-  if jq -e --arg id "$id" '.specs[] | select(.id == $id)' "$library_file" &>/dev/null; then
-    in_library=true
-    echo -e "${DIM}Spec already in library.json — preserving existing metadata.${NC}"
-    echo ""
-  fi
-
-  if [[ "$in_library" == false ]]; then
-    if [[ -t 0 ]]; then
-      # Interactive prompts
-      local core_input="" tags_input="" trigger_files_input="" trigger_exts_input=""
-
-      read -rp "  Core spec? (y/N): " core_input
-      if [[ "$core_input" =~ ^[Yy]$ ]]; then
-        core="true"
-      fi
-
-      read -rp "  Tags (comma-separated, empty for none): " tags_input
-      if [[ -n "$tags_input" ]]; then
-        tags="$(echo "$tags_input" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -s .)"
-      fi
-
-      read -rp "  Trigger files (comma-separated, empty for none): " trigger_files_input
-      read -rp "  Trigger extensions (comma-separated, empty for none): " trigger_exts_input
-
-      local trigger_files_json="[]" trigger_exts_json="[]"
-      if [[ -n "$trigger_files_input" ]]; then
-        trigger_files_json="$(echo "$trigger_files_input" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -s .)"
-      fi
-      if [[ -n "$trigger_exts_input" ]]; then
-        trigger_exts_json="$(echo "$trigger_exts_input" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -s .)"
-      fi
-
-      triggers="$(jq -n --argjson files "$trigger_files_json" --argjson exts "$trigger_exts_json" '{files: $files, extensions: $exts}')"
-      echo ""
-    else
-      # Non-interactive: use defaults silently
-      true
-    fi
-  fi
-
-  # --- Dry run ---
+  # --- Dry run: show diff, skip commit/push ---
   if [[ "$dry_run" == true ]]; then
-    echo -e "${BOLD}Dry run — would perform:${NC}"
-    echo -e "  ${DIM}1.${NC} Copy $spec_type to $dest_path"
-    if [[ "$in_library" == false ]]; then
-      echo -e "  ${DIM}2.${NC} Add entry to $library_file"
-      echo -e "     core=$core tags=$tags"
-    else
-      echo -e "  ${DIM}2.${NC} (library.json entry already exists, skip)"
-    fi
-    echo -e "  ${DIM}3.${NC} Create branch publish/$id, commit, push, open PR"
+    echo ""
+    echo -e "${BOLD}Dry run — changes that would be pushed:${NC}"
+    git -C "$cache_dir" add -A
+    git -C "$cache_dir" diff --cached --stat
+    echo ""
+    git -C "$cache_dir" diff --cached
+    # Reset staging so cache stays clean
+    git -C "$cache_dir" reset --quiet
     return 0
   fi
 
-  # --- Git operations in source repo ---
-  local branch_name="publish/$id"
+  # --- Commit ---
+  git -C "$cache_dir" add -A
 
-  # Save current branch to restore later
-  local prev_branch
-  prev_branch="$(git -C "$source_repo" rev-parse --abbrev-ref HEAD)"
-
-  # Stash dirty state if any
-  local had_stash=false
-  if ! git -C "$source_repo" diff --quiet 2>/dev/null || ! git -C "$source_repo" diff --cached --quiet 2>/dev/null; then
-    git -C "$source_repo" stash push -m "akm publish: auto-stash" --quiet
-    had_stash=true
+  # Check if there are staged changes before committing
+  if git -C "$cache_dir" diff --cached --quiet; then
+    echo -e "${DIM}No changes to publish — spec '$id' is already up to date in the remote.${NC}"
+    return 0
   fi
 
-  # Checkout main, pull, create publish branch
-  git -C "$source_repo" checkout main --quiet 2>/dev/null
-  git -C "$source_repo" pull --ff-only --quiet 2>/dev/null || true
-  git -C "$source_repo" checkout -b "$branch_name" --quiet 2>/dev/null
+  local commit_msg="feat: publish $spec_type '$id'"
+  git -C "$cache_dir" commit -m "$commit_msg" --quiet
 
-  # --- Copy spec to source repo (on the publish branch) ---
-  if [[ "$spec_type" == "skill" ]]; then
-    mkdir -p "$dest_path"
-    cp -r "$project_root/.claude/skills/$id/." "$dest_path/"
-  else
-    mkdir -p "$(dirname "$dest_path")"
-    cp "$spec_file" "$dest_path"
-  fi
-  echo -e "  ${GREEN}✓${NC} Copied $spec_type to source repo"
+  echo -e "  ${GREEN}Committed: $commit_msg${NC}"
 
-  # --- Update library.json ---
-  if [[ "$in_library" == false ]]; then
-    jq --arg id "$id" --arg type "$spec_type" --arg name "$name" --arg desc "$desc" \
-       --argjson core "$core" --argjson tags "$tags" --argjson triggers "$triggers" \
-       '.specs += [{"id":$id,"type":$type,"name":$name,"description":$desc,"core":$core,"tags":$tags,"triggers":$triggers}]' \
-       "$library_file" > "$library_file.tmp"
-    mv "$library_file.tmp" "$library_file"
-    echo -e "  ${GREEN}✓${NC} Added entry to library.json"
-  else
-    echo -e "  ${DIM}  library.json entry already exists, skipped${NC}"
+  # --- Push to main ---
+  local push_output
+  if ! push_output="$(git -C "$cache_dir" push --quiet 2>&1)"; then
+    echo -e "${RED}Error: Failed to push to publish remote.${NC}" >&2
+    [[ -n "$push_output" ]] && echo -e "${DIM}$push_output${NC}" >&2
+    echo -e "${DIM}Check your remote URL and push permissions.${NC}" >&2
+    exit 1
   fi
 
-  # Stage spec files + library.json
-  if [[ "$spec_type" == "skill" ]]; then
-    git -C "$source_repo" add "$subdir/$id/"
-  else
-    git -C "$source_repo" add "$subdir/${id}.md"
-  fi
-  git -C "$source_repo" add library.json
-
-  # Commit
-  git -C "$source_repo" commit -m "$(cat <<EOF
-feat: publish $spec_type $id
-EOF
-  )" --quiet
-
-  echo -e "  ${GREEN}✓${NC} Committed to branch $branch_name"
-
-  # Push and create PR
-  git -C "$source_repo" push -u origin "$branch_name" --quiet 2>/dev/null
-  echo -e "  ${GREEN}✓${NC} Pushed branch $branch_name"
-
-  # Create PR via gh if available
-  if command -v gh &>/dev/null; then
-    local pr_url
-    pr_url="$(gh pr create \
-      --repo "$(git -C "$source_repo" remote get-url origin | sed 's/.*github.com[:/]//' | sed 's/\.git$//')" \
-      --head "$branch_name" \
-      --title "feat: publish $spec_type $id" \
-      --body "$(cat <<EOF
-## Published spec
-
-- **id:** $id
-- **type:** $spec_type
-- **name:** $name
-- **description:** $desc
-
-Published from project $(_project_name) via \`akm publish\`.
-EOF
-    )" 2>/dev/null)" || true
-
-    if [[ -n "$pr_url" ]]; then
-      echo -e "  ${GREEN}✓${NC} PR created: $pr_url"
-    else
-      echo -e "${YELLOW}Warning: Failed to create PR via gh. Push succeeded — create PR manually.${NC}" >&2
-    fi
-  else
-    echo -e "${YELLOW}Warning: gh CLI not installed. Push succeeded — create PR manually.${NC}" >&2
-  fi
-
-  # Restore previous branch and stash
-  git -C "$source_repo" checkout "$prev_branch" --quiet 2>/dev/null || true
-  if [[ "$had_stash" == true ]]; then
-    git -C "$source_repo" stash pop --quiet 2>/dev/null || true
-  fi
-
+  echo -e "  ${GREEN}Pushed to $publish_remote${NC}"
   echo ""
-  echo -e "${GREEN}✓ Publish complete for $spec_type '$id'${NC}"
+  echo -e "${GREEN}Published $spec_type '$id' to personal remote${NC}"
 }
 
 cmd_skills_libgen() {
@@ -2305,6 +2219,323 @@ cmd_skills_libgen() {
   local count
   count="$(jq '.specs | length' "$library_file")"
   echo -e "  Specs on disk: $count"
+}
+
+cmd_skills_promote() {
+  _check_deps
+
+  # --- Parse arguments ---
+  local spec_path="" force=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force)  force=true; shift ;;
+      -h|--help)
+        echo "Usage: akm skills promote <path> [--force]"
+        echo ""
+        echo "Import a local skill into cold storage."
+        echo ""
+        echo "Arguments:"
+        echo "  <path>     Directory containing a SKILL.md file"
+        echo ""
+        echo "Options:"
+        echo "  --force    Skip overwrite confirmation"
+        return 0
+        ;;
+      -*)
+        echo -e "${RED}Unknown option: $1${NC}" >&2
+        echo "Usage: akm skills promote <path> [--force]" >&2
+        exit 1
+        ;;
+      *)
+        if [[ -z "$spec_path" ]]; then
+          spec_path="$1"; shift
+        else
+          echo -e "${RED}Error: Only one path allowed.${NC}" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
+
+  if [[ -z "$spec_path" ]]; then
+    echo -e "${RED}Usage: akm skills promote <path> [--force]${NC}" >&2
+    exit 1
+  fi
+
+  # --- Resolve to absolute path ---
+  if [[ ! -d "$spec_path" ]]; then
+    echo -e "${RED}Error: Directory not found: $spec_path${NC}" >&2
+    exit 1
+  fi
+  spec_path="$(cd "$spec_path" && pwd)"
+
+  # --- Validate: must contain SKILL.md ---
+  if [[ ! -f "$spec_path/SKILL.md" ]]; then
+    echo -e "${RED}Error: No SKILL.md found in $spec_path${NC}" >&2
+    echo -e "${DIM}The directory must contain a SKILL.md file (with optional supporting files).${NC}" >&2
+    exit 1
+  fi
+
+  local id md_file
+  id="$(basename "$spec_path")"
+  md_file="$spec_path/SKILL.md"
+
+  # --- Extract and validate frontmatter ---
+  local name desc
+  name="$(_extract_fm_field "$md_file" "name")"
+  desc="$(_extract_fm_field "$md_file" "description")"
+
+  if [[ -z "$name" ]]; then
+    echo -e "${RED}Error: Missing required frontmatter field: name${NC}" >&2
+    echo -e "${DIM}Add 'name: ...' to the YAML frontmatter in $md_file${NC}" >&2
+    exit 1
+  fi
+
+  if [[ -z "$desc" ]]; then
+    echo -e "${RED}Error: Missing required frontmatter field: description${NC}" >&2
+    echo -e "${DIM}Add 'description: ...' to the YAML frontmatter in $md_file${NC}" >&2
+    exit 1
+  fi
+
+  # Strip surrounding quotes if present (YAML allows "..." or '...')
+  name="${name#\"}" ; name="${name%\"}" ; name="${name#\'}" ; name="${name%\'}"
+  desc="${desc#\"}" ; desc="${desc%\"}" ; desc="${desc#\'}" ; desc="${desc%\'}"
+
+  # --- Interactive metadata prompts ---
+  local user_desc="$desc"
+  local user_tags=""
+  local user_core=false
+
+  if [[ -t 0 ]]; then
+    echo -e "${BOLD}Promoting skill:${NC}"
+    echo -e "  ${DIM}id:${NC}   $id"
+    echo -e "  ${DIM}name:${NC} $name"
+    echo ""
+
+    local desc_input
+    read -rp "  Description [$desc]: " desc_input
+    if [[ -n "$desc_input" ]]; then
+      user_desc="$desc_input"
+    fi
+
+    local tags_input
+    read -rp "  Tags (comma-separated) []: " tags_input
+    if [[ -n "$tags_input" ]]; then
+      user_tags="$tags_input"
+    fi
+
+    local core_input
+    read -rp "  Core skill (always available globally)? [y/N]: " core_input
+    if [[ "$core_input" =~ ^[Yy]$ ]]; then
+      user_core=true
+    fi
+    echo ""
+  fi
+
+  # --- Check if already exists in cold storage ---
+  local dest_path="$LIBRARY_DIR/skills/$id"
+
+  if [[ -e "$dest_path" ]]; then
+    if [[ "$force" == false ]]; then
+      if [[ -t 0 ]]; then
+        local overwrite_answer
+        read -rp "Overwrite existing skill '$id'? [y/N]: " overwrite_answer
+        if [[ ! "$overwrite_answer" =~ ^[Yy]$ ]]; then
+          echo -e "${DIM}Aborted.${NC}"
+          return 0
+        fi
+      else
+        echo -e "${RED}Error: Skill '$id' already exists in cold storage. Use --force to overwrite.${NC}" >&2
+        exit 1
+      fi
+    fi
+  fi
+
+  # --- Copy to cold storage ---
+  rm -rf "$dest_path"
+  cp -r "$spec_path" "$dest_path"
+  echo -e "  ${GREEN}Copied skill to cold storage${NC}"
+
+  # --- Regenerate library.json ---
+  _skills_libgen_for_dir "$LIBRARY_DIR" true
+
+  # --- Patch entry with user-provided metadata via jq ---
+  local tags_json="[]"
+  if [[ -n "$user_tags" ]]; then
+    tags_json="$(echo "$user_tags" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R . | jq -s .)"
+  fi
+
+  jq --arg id "$id" --arg desc "$user_desc" --argjson tags "$tags_json" --argjson core "$user_core" \
+    '(.specs[] | select(.id == $id)) |= (.description = $desc | .tags = $tags | .core = $core)' \
+    "$LIBRARY_JSON" > "$LIBRARY_JSON.tmp"
+  mv "$LIBRARY_JSON.tmp" "$LIBRARY_JSON"
+
+  # --- Rebuild global symlinks (same logic as end of skills sync) ---
+  # Clear existing symlinks in global tool dirs
+  for tool_dir in "${GLOBAL_TOOL_DIRS[@]}"; do
+    for sd in "${SPEC_SUBDIRS[@]}"; do
+      local dir="$tool_dir/$sd"
+      [[ -d "$dir" ]] || continue
+      find "$dir" -maxdepth 1 -type l -delete 2>/dev/null || true
+    done
+  done
+
+  # Clean broken symlinks
+  for tool_dir in "${GLOBAL_TOOL_DIRS[@]}"; do
+    for sd in "${SPEC_SUBDIRS[@]}"; do
+      local dir="$tool_dir/$sd"
+      [[ -d "$dir" ]] || continue
+      find -L "$dir" -maxdepth 1 -type l -delete 2>/dev/null || true
+    done
+  done
+
+  # Recreate core symlinks
+  local count=0
+  while IFS= read -r core_id; do
+    _create_symlink "$core_id" && ((count++)) || true
+  done < <(_get_core_ids)
+
+  echo -e "  ${GREEN}$count core symlinks rebuilt${NC}"
+  echo ""
+  echo -e "${GREEN}Promoted skill '$id' to cold storage${NC}"
+}
+
+cmd_skills_edit() {
+  _check_deps
+
+  # --- Parse arguments ---
+  local id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        echo "Usage: akm skills edit <id>"
+        echo ""
+        echo "Edit a spec's library.json metadata in \$EDITOR."
+        echo ""
+        echo "Editable fields: description, tags, core, triggers"
+        return 0
+        ;;
+      -*)
+        echo -e "${RED}Unknown option: $1${NC}" >&2
+        echo "Usage: akm skills edit <id>" >&2
+        exit 1
+        ;;
+      *)
+        if [[ -z "$id" ]]; then
+          id="$1"; shift
+        else
+          echo -e "${RED}Error: Only one spec ID allowed.${NC}" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
+
+  if [[ -z "$id" ]]; then
+    echo -e "${RED}Usage: akm skills edit <id>${NC}" >&2
+    exit 1
+  fi
+
+  # --- Verify spec exists in library.json ---
+  _check_library
+
+  if ! _spec_exists "$id"; then
+    echo -e "${RED}Error: Spec '$id' not found in library.${NC}" >&2
+    echo -e "${DIM}Run 'akm skills list' to see available specs.${NC}" >&2
+    exit 1
+  fi
+
+  # --- Extract entry to temp file ---
+  local tmp_file
+  tmp_file="$(mktemp "/tmp/akm-edit-${id}.XXXXXX.json")"
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp_file'" EXIT
+
+  jq --arg id "$id" '.specs[] | select(.id == $id)' "$LIBRARY_JSON" > "$tmp_file"
+
+  # --- Resolve editor (same pattern as cmd_instructions_edit) ---
+  local editor="${EDITOR:-$(git var GIT_EDITOR 2>/dev/null || echo "nano")}"
+
+  # --- Edit loop: open editor, validate, retry on error ---
+  while true; do
+    "$editor" "$tmp_file"
+
+    # Validate JSON structure
+    if ! jq empty "$tmp_file" 2>/dev/null; then
+      echo -e "${RED}Error: Invalid JSON.${NC}" >&2
+      local retry_answer
+      read -rp "Re-edit? [Y/n]: " retry_answer
+      retry_answer="${retry_answer:-Y}"
+      if [[ "$retry_answer" =~ ^[Yy]$ ]]; then
+        continue
+      else
+        echo -e "${DIM}Changes discarded.${NC}"
+        return 0
+      fi
+    fi
+
+    # Validate required fields exist
+    local edited_id
+    edited_id="$(jq -r '.id // empty' "$tmp_file")"
+    if [[ "$edited_id" != "$id" ]]; then
+      echo -e "${RED}Error: Cannot change spec id. Expected '$id', got '${edited_id:-<missing>}'.${NC}" >&2
+      local retry_answer
+      read -rp "Re-edit? [Y/n]: " retry_answer
+      retry_answer="${retry_answer:-Y}"
+      if [[ "$retry_answer" =~ ^[Yy]$ ]]; then
+        continue
+      else
+        echo -e "${DIM}Changes discarded.${NC}"
+        return 0
+      fi
+    fi
+
+    # Valid — break out of edit loop
+    break
+  done
+
+  # --- Merge back into library.json ---
+  local edited_json
+  edited_json="$(cat "$tmp_file")"
+
+  jq --arg id "$id" --argjson entry "$edited_json" \
+    '(.specs |= map(if .id == $id then $entry else . end))' \
+    "$LIBRARY_JSON" > "$LIBRARY_JSON.tmp"
+  mv "$LIBRARY_JSON.tmp" "$LIBRARY_JSON"
+
+  echo -e "${GREEN}Updated library.json entry for '$id'${NC}"
+
+  # --- Prompt to rebuild symlinks (relevant if core flag changed) ---
+  local rebuild_answer
+  read -rp "Rebuild global symlinks? [Y/n]: " rebuild_answer
+  rebuild_answer="${rebuild_answer:-Y}"
+  if [[ "$rebuild_answer" =~ ^[Yy]$ ]]; then
+    # Clear existing symlinks in global tool dirs
+    for tool_dir in "${GLOBAL_TOOL_DIRS[@]}"; do
+      for sd in "${SPEC_SUBDIRS[@]}"; do
+        local dir="$tool_dir/$sd"
+        [[ -d "$dir" ]] || continue
+        find "$dir" -maxdepth 1 -type l -delete 2>/dev/null || true
+      done
+    done
+
+    # Clean broken symlinks
+    for tool_dir in "${GLOBAL_TOOL_DIRS[@]}"; do
+      for sd in "${SPEC_SUBDIRS[@]}"; do
+        local dir="$tool_dir/$sd"
+        [[ -d "$dir" ]] || continue
+        find -L "$dir" -maxdepth 1 -type l -delete 2>/dev/null || true
+      done
+    done
+
+    # Recreate core symlinks
+    local count=0
+    while IFS= read -r core_id; do
+      _create_symlink "$core_id" && ((count++)) || true
+    done < <(_get_core_ids)
+
+    echo -e "${GREEN}$count core symlinks rebuilt${NC}"
+  fi
 }
 
 # --- Main ---
