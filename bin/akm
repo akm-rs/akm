@@ -362,6 +362,7 @@ Skills:
   skills status                  Show core, session, manifest, and cold specs
   skills clean [--project]       Remove stale specs
   skills promote <path>          Import local skill into cold storage
+  skills edit <id>               Edit spec metadata in \$EDITOR
   skills publish <id>            Publish spec from cold storage to personal remote
   skills libgen                  Regenerate library.json from disk
 
@@ -402,6 +403,7 @@ cmd_skills() {
     status)     cmd_skills_status "$@" ;;
     clean)      cmd_skills_clean "$@" ;;
     promote)    cmd_skills_promote "$@" ;;
+    edit)       cmd_skills_edit "$@" ;;
     publish)    cmd_skills_publish "$@" ;;
     libgen)     cmd_skills_libgen "$@" ;;
     help|--help|-h)
@@ -419,6 +421,7 @@ cmd_skills() {
       echo "  status            Full status view (default)"
       echo "  clean             Remove stale specs (--project)"
       echo "  promote <path>    Import local skill into cold storage"
+      echo "  edit <id>         Edit spec metadata in \$EDITOR"
       echo "  publish <id>      Publish spec to personal remote"
       echo "  libgen            Regenerate library.json"
       ;;
@@ -2490,6 +2493,144 @@ cmd_skills_promote() {
   echo -e "  ${GREEN}$count core symlinks rebuilt${NC}"
   echo ""
   echo -e "${GREEN}Promoted skill '$id' to cold storage${NC}"
+}
+
+cmd_skills_edit() {
+  _check_deps
+
+  # --- Parse arguments ---
+  local id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        echo "Usage: akm skills edit <id>"
+        echo ""
+        echo "Edit a spec's library.json metadata in \$EDITOR."
+        echo ""
+        echo "Editable fields: description, tags, core, triggers"
+        return 0
+        ;;
+      -*)
+        echo -e "${RED}Unknown option: $1${NC}" >&2
+        echo "Usage: akm skills edit <id>" >&2
+        exit 1
+        ;;
+      *)
+        if [[ -z "$id" ]]; then
+          id="$1"; shift
+        else
+          echo -e "${RED}Error: Only one spec ID allowed.${NC}" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
+
+  if [[ -z "$id" ]]; then
+    echo -e "${RED}Usage: akm skills edit <id>${NC}" >&2
+    exit 1
+  fi
+
+  # --- Verify spec exists in library.json ---
+  _check_library
+
+  if ! _spec_exists "$id"; then
+    echo -e "${RED}Error: Spec '$id' not found in library.${NC}" >&2
+    echo -e "${DIM}Run 'akm skills list' to see available specs.${NC}" >&2
+    exit 1
+  fi
+
+  # --- Extract entry to temp file ---
+  local tmp_file
+  tmp_file="$(mktemp "/tmp/akm-edit-${id}.XXXXXX.json")"
+  # shellcheck disable=SC2064
+  trap "rm -f '$tmp_file'" EXIT
+
+  jq --arg id "$id" '.specs[] | select(.id == $id)' "$LIBRARY_JSON" > "$tmp_file"
+
+  # --- Resolve editor (same pattern as cmd_instructions_edit) ---
+  local editor="${EDITOR:-$(git var GIT_EDITOR 2>/dev/null || echo "nano")}"
+
+  # --- Edit loop: open editor, validate, retry on error ---
+  while true; do
+    "$editor" "$tmp_file"
+
+    # Validate JSON structure
+    if ! jq empty "$tmp_file" 2>/dev/null; then
+      echo -e "${RED}Error: Invalid JSON.${NC}" >&2
+      local retry_answer
+      read -rp "Re-edit? [Y/n]: " retry_answer
+      retry_answer="${retry_answer:-Y}"
+      if [[ "$retry_answer" =~ ^[Yy]$ ]]; then
+        continue
+      else
+        echo -e "${DIM}Changes discarded.${NC}"
+        return 0
+      fi
+    fi
+
+    # Validate required fields exist
+    local edited_id
+    edited_id="$(jq -r '.id // empty' "$tmp_file")"
+    if [[ "$edited_id" != "$id" ]]; then
+      echo -e "${RED}Error: Cannot change spec id. Expected '$id', got '${edited_id:-<missing>}'.${NC}" >&2
+      local retry_answer
+      read -rp "Re-edit? [Y/n]: " retry_answer
+      retry_answer="${retry_answer:-Y}"
+      if [[ "$retry_answer" =~ ^[Yy]$ ]]; then
+        continue
+      else
+        echo -e "${DIM}Changes discarded.${NC}"
+        return 0
+      fi
+    fi
+
+    # Valid — break out of edit loop
+    break
+  done
+
+  # --- Merge back into library.json ---
+  local edited_json
+  edited_json="$(cat "$tmp_file")"
+
+  jq --arg id "$id" --argjson entry "$edited_json" \
+    '(.specs |= map(if .id == $id then $entry else . end))' \
+    "$LIBRARY_JSON" > "$LIBRARY_JSON.tmp"
+  mv "$LIBRARY_JSON.tmp" "$LIBRARY_JSON"
+
+  echo -e "${GREEN}Updated library.json entry for '$id'${NC}"
+
+  # --- Prompt to rebuild symlinks (relevant if core flag changed) ---
+  local rebuild_answer
+  read -rp "Rebuild global symlinks? [Y/n]: " rebuild_answer
+  rebuild_answer="${rebuild_answer:-Y}"
+  if [[ "$rebuild_answer" =~ ^[Yy]$ ]]; then
+    # Clear existing symlinks in global tool dirs
+    for tool_dir in "${GLOBAL_TOOL_DIRS[@]}"; do
+      for sd in "${SPEC_SUBDIRS[@]}"; do
+        local dir="$tool_dir/$sd"
+        [[ -d "$dir" ]] || continue
+        find "$dir" -maxdepth 1 -type l -delete 2>/dev/null || true
+      done
+    done
+
+    # Clean broken symlinks
+    for tool_dir in "${GLOBAL_TOOL_DIRS[@]}"; do
+      for sd in "${SPEC_SUBDIRS[@]}"; do
+        local dir="$tool_dir/$sd"
+        [[ -d "$dir" ]] || continue
+        find -L "$dir" -maxdepth 1 -type l -delete 2>/dev/null || true
+      done
+    done
+
+    # Recreate core symlinks
+    local count=0
+    while IFS= read -r core_id; do
+      _create_symlink "$core_id" && ((count++)) || true
+    done < <(_get_core_ids)
+
+    echo -e "${GREEN}$count core symlinks rebuilt${NC}"
+  fi
 }
 
 # --- Main ---
