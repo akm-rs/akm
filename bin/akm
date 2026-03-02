@@ -321,9 +321,8 @@ _copy_spec_to_project() {
     return 1
   fi
 
-  local project_dirs=("$project_root/.claude" "$project_root/.github")
-  for pdir in "${project_dirs[@]}"; do
-    local target_dir="$pdir/$subdir"
+  for pdir in "${PROJECT_TOOL_DIRS[@]}"; do
+    local target_dir="$project_root/$pdir/$subdir"
     mkdir -p "$target_dir"
 
     if [[ "$type" == "skill" ]]; then
