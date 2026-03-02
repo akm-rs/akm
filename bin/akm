@@ -1923,7 +1923,10 @@ cmd_skills_migrate() {
   # Scan project directories for non-symlink spec entries (legacy copies)
   local -a added_ids=()
   local -a skipped_ids=()
-  local -a scan_dirs=("$project_root/.claude" "$project_root/.github")
+  local -a scan_dirs=()
+  for ptd in "${PROJECT_TOOL_DIRS[@]}"; do
+    scan_dirs+=("$project_root/$ptd")
+  done
 
   for pdir in "${scan_dirs[@]}"; do
     # Scan skills (directories)
@@ -2042,18 +2045,14 @@ cmd_skills_migrate() {
   echo -e "  1. Review the manifest: ${DIM}cat .agents/akm.json${NC}"
   echo -e "  2. Delete legacy copies (if satisfied):"
 
-  local has_claude_skills=false has_claude_agents=false
-  local has_github_skills=false has_github_agents=false
-
+  local -a rm_parts=()
   for pdir in "${scan_dirs[@]}"; do
     local rel_dir="${pdir#$project_root/}"
     if [[ -d "$pdir/skills" ]]; then
-      # Check if any non-symlink entries remain
       for entry in "$pdir/skills"/*/; do
         [[ -d "$entry" ]] || continue
         [[ -L "${entry%/}" ]] && continue
-        if [[ "$rel_dir" == ".claude" ]]; then has_claude_skills=true; fi
-        if [[ "$rel_dir" == ".github" ]]; then has_github_skills=true; fi
+        rm_parts+=("$rel_dir/skills/")
         break
       done
     fi
@@ -2061,18 +2060,11 @@ cmd_skills_migrate() {
       for entry in "$pdir/agents"/*.md; do
         [[ -f "$entry" ]] || continue
         [[ -L "$entry" ]] && continue
-        if [[ "$rel_dir" == ".claude" ]]; then has_claude_agents=true; fi
-        if [[ "$rel_dir" == ".github" ]]; then has_github_agents=true; fi
+        rm_parts+=("$rel_dir/agents/")
         break
       done
     fi
   done
-
-  local rm_parts=()
-  [[ "$has_claude_skills" == true ]] && rm_parts+=(".claude/skills/")
-  [[ "$has_claude_agents" == true ]] && rm_parts+=(".claude/agents/")
-  [[ "$has_github_skills" == true ]] && rm_parts+=(".github/skills/")
-  [[ "$has_github_agents" == true ]] && rm_parts+=(".github/agents/")
 
   if [[ ${#rm_parts[@]} -gt 0 ]]; then
     echo -e "     ${DIM}rm -rf ${rm_parts[*]}${NC}"
