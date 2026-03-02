@@ -14,6 +14,7 @@ LIBRARY_JSON="$LIBRARY_DIR/library.json"
 TOOLS_JSON="$LIBRARY_DIR/tools.json"
 GLOBAL_TOOL_DIRS=("$HOME/.claude" "$HOME/.copilot" "$HOME/.agents" "$HOME/.vibe")
 SPEC_SUBDIRS=(skills agents)
+PROJECT_TOOL_DIRS=(".claude" ".github" ".agents" ".vibe")
 
 # --- Colors ---
 RED='\033[0;31m'
