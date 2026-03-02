@@ -1539,6 +1539,14 @@ cmd_skills_sync() {
     fi
   fi
 
+  # --- Snapshot local core overrides (before community copy overwrites) ---
+  local -A local_core_overrides
+  if [[ -f "$LIBRARY_JSON" ]]; then
+    while IFS= read -r cid; do
+      local_core_overrides["$cid"]=1
+    done < <(jq -r '.specs[] | select(.core == true) | .id' "$LIBRARY_JSON")
+  fi
+
   # --- Step 2: Copy community registry to cold library (clean slate) ---
   if [[ -d "$community_cache" ]]; then
     mkdir -p "$LIBRARY_DIR"
@@ -1606,6 +1614,19 @@ cmd_skills_sync() {
   # --- Step 4: Run libgen to ensure library.json is current ---
   if [[ -d "$LIBRARY_DIR/skills" ]] || [[ -d "$LIBRARY_DIR/agents" ]]; then
     _skills_libgen_for_dir "$LIBRARY_DIR" "$quiet"
+  fi
+
+  # --- Restore local core overrides ---
+  if [[ ${#local_core_overrides[@]} -gt 0 && -f "$LIBRARY_JSON" ]]; then
+    local ids_json="[]"
+    for cid in "${!local_core_overrides[@]}"; do
+      ids_json=$(echo "$ids_json" | jq --arg id "$cid" '. + [$id]')
+    done
+    jq --argjson ids "$ids_json" \
+      '(.specs[] | select(.id as $id | $ids | index($id) != null)).core = true' \
+      "$LIBRARY_JSON" > "$LIBRARY_JSON.tmp"
+    mv "$LIBRARY_JSON.tmp" "$LIBRARY_JSON"
+    [[ "$quiet" == false ]] && echo -e "${GREEN}Preserved ${#local_core_overrides[@]} local core override(s)${NC}"
   fi
 
   # --- Step 5: Rebuild global symlinks from cold library ---
