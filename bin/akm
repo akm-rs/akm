@@ -14,6 +14,7 @@ LIBRARY_JSON="$LIBRARY_DIR/library.json"
 TOOLS_JSON="$LIBRARY_DIR/tools.json"
 GLOBAL_TOOL_DIRS=("$HOME/.claude" "$HOME/.copilot" "$HOME/.agents" "$HOME/.vibe")
 SPEC_SUBDIRS=(skills agents)
+PROJECT_TOOL_DIRS=(".claude" ".github" ".agents" ".vibe")
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -320,9 +321,8 @@ _copy_spec_to_project() {
     return 1
   fi
 
-  local project_dirs=("$project_root/.claude" "$project_root/.github")
-  for pdir in "${project_dirs[@]}"; do
-    local target_dir="$pdir/$subdir"
+  for pdir in "${PROJECT_TOOL_DIRS[@]}"; do
+    local target_dir="$project_root/$pdir/$subdir"
     mkdir -p "$target_dir"
 
     if [[ "$type" == "skill" ]]; then
@@ -1539,6 +1539,14 @@ cmd_skills_sync() {
     fi
   fi
 
+  # --- Snapshot local core overrides (before community copy overwrites) ---
+  local -A local_core_overrides
+  if [[ -f "$LIBRARY_JSON" ]]; then
+    while IFS= read -r cid; do
+      local_core_overrides["$cid"]=1
+    done < <(jq -r '.specs[] | select(.core == true) | .id' "$LIBRARY_JSON")
+  fi
+
   # --- Step 2: Copy community registry to cold library (clean slate) ---
   if [[ -d "$community_cache" ]]; then
     mkdir -p "$LIBRARY_DIR"
@@ -1606,6 +1614,19 @@ cmd_skills_sync() {
   # --- Step 4: Run libgen to ensure library.json is current ---
   if [[ -d "$LIBRARY_DIR/skills" ]] || [[ -d "$LIBRARY_DIR/agents" ]]; then
     _skills_libgen_for_dir "$LIBRARY_DIR" "$quiet"
+  fi
+
+  # --- Restore local core overrides ---
+  if [[ ${#local_core_overrides[@]} -gt 0 && -f "$LIBRARY_JSON" ]]; then
+    local ids_json="[]"
+    for cid in "${!local_core_overrides[@]}"; do
+      ids_json=$(echo "$ids_json" | jq --arg id "$cid" '. + [$id]')
+    done
+    jq --argjson ids "$ids_json" \
+      '(.specs[] | select(.id as $id | $ids | index($id) != null)).core = true' \
+      "$LIBRARY_JSON" > "$LIBRARY_JSON.tmp"
+    mv "$LIBRARY_JSON.tmp" "$LIBRARY_JSON"
+    [[ "$quiet" == false ]] && echo -e "${GREEN}Preserved ${#local_core_overrides[@]} local core override(s)${NC}"
   fi
 
   # --- Step 5: Rebuild global symlinks from cold library ---
@@ -1715,52 +1736,72 @@ _clean_project() {
   local removed=0
   local unknown=()
 
-  for subdir in "${SPEC_SUBDIRS[@]}"; do
-    local dir="$project_root/.claude/$subdir"
-    [[ -d "$dir" ]] || continue
+  for tool_dir in "${PROJECT_TOOL_DIRS[@]}"; do
+    for subdir in "${SPEC_SUBDIRS[@]}"; do
+      local dir="$project_root/$tool_dir/$subdir"
+      [[ -d "$dir" ]] || continue
 
-    for entry in "$dir"/*; do
-      [[ -e "$entry" ]] || continue
-      [[ -L "$entry" ]] && continue  # skip symlinks (core specs)
+      for entry in "$dir"/*; do
+        [[ -e "$entry" ]] || continue
+        [[ -L "$entry" ]] && continue  # skip symlinks (core specs)
 
-      local name
-      name="$(basename "$entry")"
-      # Strip .md extension for agents to get the ID
-      local id="$name"
-      if [[ "$subdir" == "agents" ]]; then
-        id="${name%.md}"
-      fi
-
-      if _spec_exists "$id"; then
-        # In library — safe to remove
-        if [[ "$dry_run" == true ]]; then
-          echo -e "${DIM}Would remove: .claude/$subdir/$name${NC}"
-        else
-          rm -rf "$entry"
-          echo -e "  ${GREEN}✓${NC} Removed .claude/$subdir/$name"
+        local name
+        name="$(basename "$entry")"
+        # Strip .md extension for agents to get the ID
+        local id="$name"
+        if [[ "$subdir" == "agents" ]]; then
+          id="${name%.md}"
         fi
-        ((removed++)) || true
-      else
-        # Not in library — leave alone, warn
-        unknown+=(".claude/$subdir/$name")
-      fi
+
+        if _spec_exists "$id"; then
+          # In library — safe to remove
+          if [[ "$dry_run" == true ]]; then
+            echo -e "${DIM}Would remove: $tool_dir/$subdir/$name${NC}"
+          else
+            rm -rf "$entry"
+            echo -e "  ${GREEN}✓${NC} Removed $tool_dir/$subdir/$name"
+          fi
+          ((removed++)) || true
+        else
+          # Not in library — track for confirmation
+          unknown+=("$entry|$tool_dir/$subdir/$name")
+        fi
+      done
     done
   done
+
+  # Handle unknown specs — prompt for removal
+  if [[ ${#unknown[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "${YELLOW}Not in cold library:${NC}"
+    if [[ "$dry_run" == true ]]; then
+      for u in "${unknown[@]}"; do
+        local display="${u#*|}"
+        echo -e "  ${DIM}$display${NC}  — not in library (would prompt)"
+      done
+    else
+      for u in "${unknown[@]}"; do
+        local path="${u%%|*}"
+        local display="${u#*|}"
+        echo -ne "  ${YELLOW}$display${NC} is not in the cold library. Remove anyway? [y/N] "
+        read -r answer </dev/tty
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+          rm -rf "$path"
+          echo -e "  ${GREEN}✓${NC} Removed $display"
+          ((removed++)) || true
+        else
+          echo -e "  ${DIM}Kept $display${NC}"
+        fi
+      done
+    fi
+  fi
 
   if [[ "$removed" -eq 0 && ${#unknown[@]} -eq 0 ]]; then
     echo -e "${DIM}Nothing to clean in project${NC}"
   elif [[ "$dry_run" == true && "$removed" -gt 0 ]]; then
     echo -e "\n${DIM}$removed items would be removed. Run without --dry-run to proceed.${NC}"
   elif [[ "$removed" -gt 0 ]]; then
-    echo -e "\n${GREEN}✓ Cleaned $removed non-symlink entries from project${NC}"
-  fi
-
-  if [[ ${#unknown[@]} -gt 0 ]]; then
-    echo ""
-    echo -e "${YELLOW}Not in library (kept):${NC}"
-    for u in "${unknown[@]}"; do
-      echo -e "  ${DIM}$u${NC}  — publish or remove manually"
-    done
+    echo -e "\n${GREEN}✓ Cleaned $removed entries from project${NC}"
   fi
 }
 
@@ -1923,7 +1964,10 @@ cmd_skills_migrate() {
   # Scan project directories for non-symlink spec entries (legacy copies)
   local -a added_ids=()
   local -a skipped_ids=()
-  local -a scan_dirs=("$project_root/.claude" "$project_root/.github")
+  local -a scan_dirs=()
+  for ptd in "${PROJECT_TOOL_DIRS[@]}"; do
+    scan_dirs+=("$project_root/$ptd")
+  done
 
   for pdir in "${scan_dirs[@]}"; do
     # Scan skills (directories)
@@ -2042,18 +2086,14 @@ cmd_skills_migrate() {
   echo -e "  1. Review the manifest: ${DIM}cat .agents/akm.json${NC}"
   echo -e "  2. Delete legacy copies (if satisfied):"
 
-  local has_claude_skills=false has_claude_agents=false
-  local has_github_skills=false has_github_agents=false
-
+  local -a rm_parts=()
   for pdir in "${scan_dirs[@]}"; do
     local rel_dir="${pdir#$project_root/}"
     if [[ -d "$pdir/skills" ]]; then
-      # Check if any non-symlink entries remain
       for entry in "$pdir/skills"/*/; do
         [[ -d "$entry" ]] || continue
         [[ -L "${entry%/}" ]] && continue
-        if [[ "$rel_dir" == ".claude" ]]; then has_claude_skills=true; fi
-        if [[ "$rel_dir" == ".github" ]]; then has_github_skills=true; fi
+        rm_parts+=("$rel_dir/skills/")
         break
       done
     fi
@@ -2061,18 +2101,11 @@ cmd_skills_migrate() {
       for entry in "$pdir/agents"/*.md; do
         [[ -f "$entry" ]] || continue
         [[ -L "$entry" ]] && continue
-        if [[ "$rel_dir" == ".claude" ]]; then has_claude_agents=true; fi
-        if [[ "$rel_dir" == ".github" ]]; then has_github_agents=true; fi
+        rm_parts+=("$rel_dir/agents/")
         break
       done
     fi
   done
-
-  local rm_parts=()
-  [[ "$has_claude_skills" == true ]] && rm_parts+=(".claude/skills/")
-  [[ "$has_claude_agents" == true ]] && rm_parts+=(".claude/agents/")
-  [[ "$has_github_skills" == true ]] && rm_parts+=(".github/skills/")
-  [[ "$has_github_agents" == true ]] && rm_parts+=(".github/agents/")
 
   if [[ ${#rm_parts[@]} -gt 0 ]]; then
     echo -e "     ${DIM}rm -rf ${rm_parts[*]}${NC}"
