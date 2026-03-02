@@ -1715,52 +1715,72 @@ _clean_project() {
   local removed=0
   local unknown=()
 
-  for subdir in "${SPEC_SUBDIRS[@]}"; do
-    local dir="$project_root/.claude/$subdir"
-    [[ -d "$dir" ]] || continue
+  for tool_dir in "${PROJECT_TOOL_DIRS[@]}"; do
+    for subdir in "${SPEC_SUBDIRS[@]}"; do
+      local dir="$project_root/$tool_dir/$subdir"
+      [[ -d "$dir" ]] || continue
 
-    for entry in "$dir"/*; do
-      [[ -e "$entry" ]] || continue
-      [[ -L "$entry" ]] && continue  # skip symlinks (core specs)
+      for entry in "$dir"/*; do
+        [[ -e "$entry" ]] || continue
+        [[ -L "$entry" ]] && continue  # skip symlinks (core specs)
 
-      local name
-      name="$(basename "$entry")"
-      # Strip .md extension for agents to get the ID
-      local id="$name"
-      if [[ "$subdir" == "agents" ]]; then
-        id="${name%.md}"
-      fi
-
-      if _spec_exists "$id"; then
-        # In library — safe to remove
-        if [[ "$dry_run" == true ]]; then
-          echo -e "${DIM}Would remove: .claude/$subdir/$name${NC}"
-        else
-          rm -rf "$entry"
-          echo -e "  ${GREEN}✓${NC} Removed .claude/$subdir/$name"
+        local name
+        name="$(basename "$entry")"
+        # Strip .md extension for agents to get the ID
+        local id="$name"
+        if [[ "$subdir" == "agents" ]]; then
+          id="${name%.md}"
         fi
-        ((removed++)) || true
-      else
-        # Not in library — leave alone, warn
-        unknown+=(".claude/$subdir/$name")
-      fi
+
+        if _spec_exists "$id"; then
+          # In library — safe to remove
+          if [[ "$dry_run" == true ]]; then
+            echo -e "${DIM}Would remove: $tool_dir/$subdir/$name${NC}"
+          else
+            rm -rf "$entry"
+            echo -e "  ${GREEN}✓${NC} Removed $tool_dir/$subdir/$name"
+          fi
+          ((removed++)) || true
+        else
+          # Not in library — track for confirmation
+          unknown+=("$entry|$tool_dir/$subdir/$name")
+        fi
+      done
     done
   done
+
+  # Handle unknown specs — prompt for removal
+  if [[ ${#unknown[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "${YELLOW}Not in cold library:${NC}"
+    if [[ "$dry_run" == true ]]; then
+      for u in "${unknown[@]}"; do
+        local display="${u#*|}"
+        echo -e "  ${DIM}$display${NC}  — not in library (would prompt)"
+      done
+    else
+      for u in "${unknown[@]}"; do
+        local path="${u%%|*}"
+        local display="${u#*|}"
+        echo -ne "  ${YELLOW}$display${NC} is not in the cold library. Remove anyway? [y/N] "
+        read -r answer </dev/tty
+        if [[ "$answer" =~ ^[Yy]$ ]]; then
+          rm -rf "$path"
+          echo -e "  ${GREEN}✓${NC} Removed $display"
+          ((removed++)) || true
+        else
+          echo -e "  ${DIM}Kept $display${NC}"
+        fi
+      done
+    fi
+  fi
 
   if [[ "$removed" -eq 0 && ${#unknown[@]} -eq 0 ]]; then
     echo -e "${DIM}Nothing to clean in project${NC}"
   elif [[ "$dry_run" == true && "$removed" -gt 0 ]]; then
     echo -e "\n${DIM}$removed items would be removed. Run without --dry-run to proceed.${NC}"
   elif [[ "$removed" -gt 0 ]]; then
-    echo -e "\n${GREEN}✓ Cleaned $removed non-symlink entries from project${NC}"
-  fi
-
-  if [[ ${#unknown[@]} -gt 0 ]]; then
-    echo ""
-    echo -e "${YELLOW}Not in library (kept):${NC}"
-    for u in "${unknown[@]}"; do
-      echo -e "  ${DIM}$u${NC}  — publish or remove manually"
-    done
+    echo -e "\n${GREEN}✓ Cleaned $removed entries from project${NC}"
   fi
 }
 
